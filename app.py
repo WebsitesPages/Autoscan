@@ -908,59 +908,37 @@ async function ensureSW() {
 }
 
 async function subscribePush() {
-  const env = determineEnvironment();
-  
-  // iOS-Benutzer müssen die App als PWA installieren
-  if (env.isIOS && !env.isStandalone) {
-    alert('📱 Für Push-Benachrichtigungen auf iOS:\n\n1. Tippen Sie auf das Teilen-Symbol unten\n2. Wählen Sie "Zum Home-Bildschirm"\n3. Öffnen Sie die App vom Home-Bildschirm\n4. Dann können Sie Benachrichtigungen aktivieren');
-    return;
-  }
-  
-  // Push nicht unterstützt
-  if (!env.pushSupported) {
-    if (env.isIOS) {
-      alert('Push-Benachrichtigungen erfordern iOS 16.4 oder neuer.');
-    } else {
-      alert('Ihr Browser unterstützt keine Push-Benachrichtigungen.');
-    }
-    return;
-  }
-  
-  // Permission bereits abgelehnt
-  if (Notification.permission === 'denied') {
-    alert('Benachrichtigungen wurden blockiert. Bitte erlauben Sie Benachrichtigungen in Ihren Browser-Einstellungen.');
-    return;
-  }
-  
-  const reg = await ensureSW();
-  if (!reg) { 
-    alert('Service Worker konnte nicht registriert werden. Bitte laden Sie die Seite neu.');
-    return;
-  }
-  
-  const perm = await Notification.requestPermission();
-  if (perm !== 'granted') return;
-
   try {
+    const reg = await ensureSW();
+    if (!reg) { alert('SW/Push nicht verfügbar'); return; }
+
+    const perm = await Notification.requestPermission();
+    console.log('permission:', perm);
+    if (perm !== 'granted') { alert('Benachrichtigungen nicht erlaubt'); return; }
+
     const sub = await reg.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
     });
+    console.log('sub ok', sub);
 
-    // aktuelle Filter (Querystring) + optional max Preis mitschicken
     const filters = window.location.search.replace(/^\?/, '');
     const max_price = document.querySelector('input[name="price_max"]')?.value || null;
 
-    await fetch('/api/push/subscribe', {
+    const r = await fetch('/api/push/subscribe', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ subscription: sub.toJSON(), filters, max_price })
     });
+    const j = await r.json();
+    if (!j.ok) throw new Error('Server sagt nein');
 
-    alert('✅ Benachrichtigungen aktiviert! Sie erhalten Updates zu neuen Angeboten.');
-  } catch (err) {
-    console.error('Push subscription failed:', err);
-    alert('Fehler beim Aktivieren der Benachrichtigungen. Bitte versuchen Sie es erneut.');
+    // Test: lokale Notification sofort zeigen
+    await reg.showNotification('Autoscan aktiviert', { body: 'Push-Abo gespeichert.' });
+    alert('Benachrichtigungen aktiviert.');
+  } catch (e) {
+    console.error(e);
+    alert('Fehler beim Abonnieren: ' + (e && e.message ? e.message : e));
   }
 }
 
