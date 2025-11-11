@@ -10,6 +10,7 @@ from providers.links import build_autoscout_search_url, build_similar_search_url
 from providers.ka_stats import fetch_ka_stats
 from providers.autoscout_stats import fetch_autoscout_stats
 from providers.carwow_stats import fetch_carwow_stats, build_carwow_search_url
+from flask import send_from_directory, make_response
 
 VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_KEY_PEM", "")
@@ -27,9 +28,19 @@ app.jinja_env.globals['build_autoscout_search_url'] = build_autoscout_search_url
 app.jinja_env.globals['build_similar_search_url']  = build_similar_search_url
 app.jinja_env.globals['build_carwow_search_url']   = build_carwow_search_url
 
+@app.route("/manifest.webmanifest")
+def manifest():
+    resp = make_response(send_from_directory("static", "manifest.webmanifest"))
+    resp.headers["Content-Type"] = "application/manifest+json"
+    return resp
 
-
-
+@app.route("/sw.js")
+def sw():
+    resp = make_response(send_from_directory("static", "sw.js"))
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+    
 @app.after_request
 def add_no_cache_headers(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -402,7 +413,7 @@ TPL = r"""
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -887,7 +898,7 @@ function determineEnvironment() {
 async function ensureSW() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
   try {
-    const reg = await navigator.serviceWorker.register('/static/sw.js');
+    const reg = await navigator.serviceWorker.register('/sw.js', {scope:'/'});
     await navigator.serviceWorker.ready;
     return reg;
   } catch (err) {
@@ -978,7 +989,7 @@ document.getElementById('pushBtn')?.addEventListener('click', (e) => {
 
 <script>
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/static/sw.js");
+  navigator.serviceWorker.register("/sw.js", {scope: "/"});  // <-- statt /static/sw.js
 }
 </script>
 </body>
