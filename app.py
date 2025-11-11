@@ -509,6 +509,12 @@ TPL = r"""
 <p id="mobileMsg" class="mt-2 text-xs text-gray-600"></p>
 
       <div class="mt-4 flex items-center justify-end gap-2">
+      <button id="pushBtn"
+        type="button"
+        class="px-3 py-2 rounded-xl bg-indigo-600 text-white">
+  🔔 Benachrichtigen
+</button>
+
         <a href="{{ url_for('index') }}" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Zurücksetzen</a>
         <button class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">Filtern</button>
       </div>
@@ -848,15 +854,25 @@ async function initCarwowBadges(scope) {
     initAutoscoutBadges();
     initCarwowBadges();
 
-
-// Service Worker + Push
+// --- Push / Service Worker ---
 const VAPID_PUBLIC = "{{ VAPID_PUBLIC|default('') }}";
+
+function urlBase64ToUint8Array(b64) {
+  const padding = '='.repeat((4 - b64.length % 4) % 4);
+  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
+
 async function ensureSW() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
   const reg = await navigator.serviceWorker.register('/static/sw.js');
   await navigator.serviceWorker.ready;
   return reg;
 }
+
 async function subscribePush() {
   const reg = await ensureSW();
   if (!reg) { alert('Push nicht verfügbar'); return; }
@@ -867,28 +883,25 @@ async function subscribePush() {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
   });
-  // aktuelle Filter + optional Preislimit verwenden
+
+  // aktuelle Filter (Querystring) + optional max Preis mitschicken
   const filters = window.location.search.replace(/^\?/, '');
   const max_price = document.querySelector('input[name="price_max"]')?.value || null;
 
   await fetch('/api/push/subscribe', {
-    method: 'POST', headers: {'Content-Type':'application/json'},
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ subscription: sub.toJSON(), filters, max_price })
   });
+
   alert('Benachrichtigungen aktiviert.');
 }
-function urlBase64ToUint8Array(b64) {
-  const padding = '='.repeat((4 - b64.length % 4) % 4);
-  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const rawData = atob(base64); const outputArray = new Uint8Array(rawData.length);
-  for (let i=0;i<rawData.length;++i) outputArray[i]=rawData.charCodeAt(i); return outputArray;
-}
-// Button einfügen
-const btn = document.createElement('button');
-btn.textContent = '🔔 Benachrichtigen';
-btn.className = 'ml-2 px-3 py-2 rounded-xl bg-indigo-600 text-white';
-document.querySelector('form .flex.items-center.justify-end')?.prepend(btn);
-btn.addEventListener('click', (e)=>{ e.preventDefault(); subscribePush(); });
+
+// Button binden
+document.getElementById('pushBtn')?.addEventListener('click', (e) => {
+  e.preventDefault();
+  subscribePush();
+});
 
 
   setInterval(autosync, REFRESH_MS);
@@ -896,7 +909,11 @@ btn.addEventListener('click', (e)=>{ e.preventDefault(); subscribePush(); });
 </script>
 
 
-
+<script>
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/static/sw.js");
+}
+</script>
 </body>
 </html>
 """
