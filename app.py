@@ -1,7 +1,11 @@
 # app.py — einfache Web-UI für deine autos.db
 # Voraussetzungen: pip install flask
 # Start: python3 app.py  →  http://127.0.0.1:5000/
-
+from pywebpush import webpush, WebPushException
+import json, time
+VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_KEY_PEM", "")
+PUSH_SUBJECT = os.environ.get("PUSH_SUBJECT", "mailto:noreply@example.com")
 import os
 import sqlite3
 from flask import Flask, request, redirect, url_for, render_template_string
@@ -42,6 +46,19 @@ KA_AREA_SLUG  = os.environ.get("KA_AREA_SLUG", "bayern")   # Pfadsegment
 KA_AREA_CODE  = os.environ.get("KA_AREA_CODE", "l5510")    # Regionscode im c216-Block
 KA_RADIUS_KM  = int(os.environ.get("KA_RADIUS", "100"))    # r100
 
+def init_push_table():
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions(
+        id INTEGER PRIMARY KEY,
+        endpoint TEXT UNIQUE,
+        p256dh TEXT, auth TEXT,
+        filters TEXT,          -- gespeicherte Query (?q=…&price_max=…)
+        max_price INTEGER,     -- optional: Preisobergrenze
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.commit(); conn.close()
+
+init_push_table()
 def build_similar_search_url(r):
     def val(k):
         try: return r[k]
@@ -330,6 +347,7 @@ def index():
         "prev_url": page_url(page - 1),
         "next_url": page_url(page + 1),
         "params": params,
+        "VAPID_PUBLIC": VAPID_PUBLIC,
     })
 
 @app.get("/api/table")
@@ -383,6 +401,8 @@ TPL = r"""
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+<meta name="theme-color" content="#4f46e5">
   <title>{{ app_title }}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -828,6 +848,49 @@ async function initCarwowBadges(scope) {
     initAutoscoutBadges();
     initCarwowBadges();
 
+
+// Service Worker + Push
+const VAPID_PUBLIC = "{{ VAPID_PUBLIC|default('') }}";
+async function ensureSW() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+  const reg = await navigator.serviceWorker.register('/static/sw.js');
+  await navigator.serviceWorker.ready;
+  return reg;
+}
+async function subscribePush() {
+  const reg = await ensureSW();
+  if (!reg) { alert('Push nicht verfügbar'); return; }
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') return;
+
+  const sub = await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
+  });
+  // aktuelle Filter + optional Preislimit verwenden
+  const filters = window.location.search.replace(/^\?/, '');
+  const max_price = document.querySelector('input[name="price_max"]')?.value || null;
+
+  await fetch('/api/push/subscribe', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ subscription: sub.toJSON(), filters, max_price })
+  });
+  alert('Benachrichtigungen aktiviert.');
+}
+function urlBase64ToUint8Array(b64) {
+  const padding = '='.repeat((4 - b64.length % 4) % 4);
+  const base64 = (b64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64); const outputArray = new Uint8Array(rawData.length);
+  for (let i=0;i<rawData.length;++i) outputArray[i]=rawData.charCodeAt(i); return outputArray;
+}
+// Button einfügen
+const btn = document.createElement('button');
+btn.textContent = '🔔 Benachrichtigen';
+btn.className = 'ml-2 px-3 py-2 rounded-xl bg-indigo-600 text-white';
+document.querySelector('form .flex.items-center.justify-end')?.prepend(btn);
+btn.addEventListener('click', (e)=>{ e.preventDefault(); subscribePush(); });
+
+
   setInterval(autosync, REFRESH_MS);
 });
 </script>
@@ -903,6 +966,51 @@ from time import monotonic
 _sync_lock = threading.Lock()
 _last_sync_ts = 0.0
 
+def _notify_matches(new_rows):
+    conn = get_db(); cur = conn.cursor()
+    subs = list(cur.execute("SELECT endpoint,p256dh,auth,filters,max_price FROM push_subscriptions"))
+    conn.close()
+    for r in new_rows:
+        for (endpoint,p256dh,auth,filters,max_price) in subs:
+            # Filter prüfen
+            params = {}
+            if filters:
+                from urllib.parse import parse_qs
+                for k,v in parse_qs(filters, keep_blank_values=True).items():
+                    params[k] = v[0] if v else ""
+            where_sql, args, _ = build_query(params)
+            # Ist r in der gefilterten Menge?
+            # (vereinfachter Check: wir prüfen nur Preis/PLZ/City/KM/EZ gegen params)
+            ok = True
+            if "price_max" in params and r["price_eur"] and int(r["price_eur"]) > int(params["price_max"] or 0):
+                ok = False
+            if "km_max" in params and r["km"] and int(r["km"]) > int(params["km_max"] or 0):
+                ok = False
+            if max_price and r["price_eur"] and int(r["price_eur"]) > int(max_price):
+                ok = False
+            if not ok: continue
+
+            payload = {
+              "title": "Neues günstiges Angebot",
+              "body": f"{r['title']} – {r['price_eur']} € • {r['city'] or ''}",
+              "url": r["url"]
+            }
+            try:
+                webpush(
+                  subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
+                  data=json.dumps(payload),
+                  vapid_private_key=VAPID_PRIVATE_PEM,
+                  vapid_claims={"sub": PUSH_SUBJECT},
+                )
+            except WebPushException:
+                # Abo kaputt → löschen
+                conn = get_db(); c2 = conn.cursor()
+                c2.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+                conn.commit(); conn.close()
+
+    return
+
+
 @app.get("/api/sync")
 def api_sync():
     """
@@ -911,28 +1019,37 @@ def api_sync():
     """
     global _last_sync_ts
     now = monotonic()
-    if (now - _last_sync_ts) < 8.0:  # kleiner Cooldown
+    if (now - _last_sync_ts) < 8.0:
         return {"ok": True, "seen": 0, "stored": 0, "changed": False}
 
     if not _sync_lock.acquire(blocking=False):
         return {"ok": True, "seen": 0, "stored": 0, "changed": False}
 
     try:
-        # init DB sicherstellen
         from db import init_db
         init_db()
 
-        # einmal scrapen
         from scrape_ebay import sync_once
         res = sync_once()
         _last_sync_ts = monotonic()
         changed = (res.get("stored", 0) > 0)
+
+        if changed:
+            # jüngste Einträge holen und Benachrichtigungen senden
+            conn = get_db(); cur = conn.cursor()
+            cur.execute("""
+                SELECT id,title,price_eur,km,city,url,posted_at
+                FROM listings
+                ORDER BY posted_at DESC, last_seen DESC
+                LIMIT 20
+            """)
+            new_rows = cur.fetchall()
+            conn.close()
+            _notify_matches(new_rows)
+
         return {"ok": True, **res, "changed": changed}
     finally:
         _sync_lock.release()
-
-# --- ÄHNLICHE-ANGEBOTE: Stats (Count + Ø-Preis) ------------------------------
-from scrape_ebay import crawl_search_page  # nutzt dein vorhandenes Parsing
 
 def _page2_url(u: str) -> str:
     # fügt "seite:2/" nach /s-autos/ oder nach der Marken-Slug-Position ein
@@ -1370,8 +1487,35 @@ def api_carwow_stats_url():
     res = fetch_carwow_stats(url)
     return res, 200
 
+@app.post("/api/push/subscribe")
+def api_push_sub():
+    data = request.get_json(force=True, silent=True) or {}
+    sub = data.get("subscription") or {}
+    filt = data.get("filters") or ""
+    maxp = data.get("max_price")
+    if not (sub.get("endpoint") and sub.get("keys",{}).get("p256dh") and sub["keys"].get("auth")):
+        return {"ok": False, "error": "bad subscription"}, 400
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("""INSERT INTO push_subscriptions(endpoint,p256dh,auth,filters,max_price)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh,auth=excluded.auth,filters=excluded.filters,max_price=excluded.max_price""",
+                   (sub["endpoint"], sub["keys"]["p256dh"], sub["keys"]["auth"], filt, maxp))
+    conn.commit(); conn.close()
+    return {"ok": True}
+
+@app.post("/api/push/unsubscribe")
+def api_push_unsub():
+    data = request.get_json(force=True, silent=True) or {}
+    ep = (data.get("endpoint") or "").strip()
+    if not ep: return {"ok": False}, 400
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (ep,))
+    conn.commit(); conn.close()
+    return {"ok": True}
 
 if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 5000))
     print(f"[i] Datenbank: {DB_PATH}")
-    print("[i] Start auf http://127.0.0.1:5000/")
-    app.run(debug=True)
+    print(f"[i] Start auf 0.0.0.0:{port}")
+    app.run(host="0.0.0.0", port=port, debug=False)
