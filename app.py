@@ -1,18 +1,19 @@
 # app.py — einfache Web-UI für deine autos.db
 # Voraussetzungen: pip install flask
 # Start: python3 app.py  →  http://127.0.0.1:5000/
-from pywebpush import webpush, WebPushException
-import json, time
-VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
-VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_KEY_PEM", "")
-PUSH_SUBJECT = os.environ.get("PUSH_SUBJECT", "mailto:noreply@example.com")
 import os
 import sqlite3
+import json, time
+from pywebpush import webpush, WebPushException
 from flask import Flask, request, redirect, url_for, render_template_string
 from providers.links import build_autoscout_search_url, build_similar_search_url
 from providers.ka_stats import fetch_ka_stats
 from providers.autoscout_stats import fetch_autoscout_stats
 from providers.carwow_stats import fetch_carwow_stats, build_carwow_search_url
+
+VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_KEY_PEM", "")
+PUSH_SUBJECT = os.environ.get("PUSH_SUBJECT", "mailto:noreply@example.com")
 
 
 APP_TITLE = "Autoscan – Listings"
@@ -402,7 +403,10 @@ TPL = r"""
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <link rel="manifest" href="/static/manifest.webmanifest">
-<meta name="theme-color" content="#4f46e5">
+  <link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#4f46e5">
   <title>{{ app_title }}</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
@@ -866,42 +870,105 @@ function urlBase64ToUint8Array(b64) {
   return outputArray;
 }
 
+// Umgebungserkennung
+function determineEnvironment() {
+  // iOS erkennen (inkl. iPadOS, das sich als MacIntel identifiziert)
+  const isIOS = (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || 
+                       (navigator.standalone === true);
+  const hasSW = 'serviceWorker' in navigator;
+  const hasPushManager = 'PushManager' in window;
+  const pushSupported = hasSW && hasPushManager;
+  
+  return { isIOS, isStandalone, pushSupported, hasSW };
+}
+
 async function ensureSW() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
-  const reg = await navigator.serviceWorker.register('/static/sw.js');
-  await navigator.serviceWorker.ready;
-  return reg;
+  try {
+    const reg = await navigator.serviceWorker.register('/static/sw.js');
+    await navigator.serviceWorker.ready;
+    return reg;
+  } catch (err) {
+    console.error('Service Worker registration failed:', err);
+    return null;
+  }
 }
 
 async function subscribePush() {
+  const env = determineEnvironment();
+  
+  // iOS-Benutzer müssen die App als PWA installieren
+  if (env.isIOS && !env.isStandalone) {
+    alert('📱 Für Push-Benachrichtigungen auf iOS:\n\n1. Tippen Sie auf das Teilen-Symbol unten\n2. Wählen Sie "Zum Home-Bildschirm"\n3. Öffnen Sie die App vom Home-Bildschirm\n4. Dann können Sie Benachrichtigungen aktivieren');
+    return;
+  }
+  
+  // Push nicht unterstützt
+  if (!env.pushSupported) {
+    if (env.isIOS) {
+      alert('Push-Benachrichtigungen erfordern iOS 16.4 oder neuer.');
+    } else {
+      alert('Ihr Browser unterstützt keine Push-Benachrichtigungen.');
+    }
+    return;
+  }
+  
+  // Permission bereits abgelehnt
+  if (Notification.permission === 'denied') {
+    alert('Benachrichtigungen wurden blockiert. Bitte erlauben Sie Benachrichtigungen in Ihren Browser-Einstellungen.');
+    return;
+  }
+  
   const reg = await ensureSW();
-  if (!reg) { alert('Push nicht verfügbar'); return; }
+  if (!reg) { 
+    alert('Service Worker konnte nicht registriert werden. Bitte laden Sie die Seite neu.');
+    return;
+  }
+  
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') return;
 
-  const sub = await reg.pushManager.subscribe({
-    userVisibleOnly: true,
-    applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
-  });
+  try {
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
+    });
 
-  // aktuelle Filter (Querystring) + optional max Preis mitschicken
-  const filters = window.location.search.replace(/^\?/, '');
-  const max_price = document.querySelector('input[name="price_max"]')?.value || null;
+    // aktuelle Filter (Querystring) + optional max Preis mitschicken
+    const filters = window.location.search.replace(/^\?/, '');
+    const max_price = document.querySelector('input[name="price_max"]')?.value || null;
 
-  await fetch('/api/push/subscribe', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ subscription: sub.toJSON(), filters, max_price })
-  });
+    await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ subscription: sub.toJSON(), filters, max_price })
+    });
 
-  alert('Benachrichtigungen aktiviert.');
+    alert('✅ Benachrichtigungen aktiviert! Sie erhalten Updates zu neuen Angeboten.');
+  } catch (err) {
+    console.error('Push subscription failed:', err);
+    alert('Fehler beim Aktivieren der Benachrichtigungen. Bitte versuchen Sie es erneut.');
+  }
 }
 
-// Button binden
+// Button binden mit Statusanzeige
 document.getElementById('pushBtn')?.addEventListener('click', (e) => {
   e.preventDefault();
   subscribePush();
 });
+
+// Zeige Hinweis für iOS-Benutzer ohne PWA-Installation
+(function showIOSHint() {
+  const env = determineEnvironment();
+  const msgEl = document.getElementById('mobileMsg');
+  
+  if (msgEl && env.isIOS && !env.isStandalone) {
+    msgEl.innerHTML = '💡 <strong>iOS-Tipp:</strong> Für Push-Benachrichtigungen fügen Sie diese Seite zum Home-Bildschirm hinzu (Teilen → "Zum Home-Bildschirm").';
+    msgEl.className = 'mt-2 text-xs text-indigo-600 bg-indigo-50 p-2 rounded';
+  }
+})();
 
 
   setInterval(autosync, REFRESH_MS);
