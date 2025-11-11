@@ -58,19 +58,30 @@ KA_AREA_SLUG  = os.environ.get("KA_AREA_SLUG", "bayern")   # Pfadsegment
 KA_AREA_CODE  = os.environ.get("KA_AREA_CODE", "l5510")    # Regionscode im c216-Block
 KA_RADIUS_KM  = int(os.environ.get("KA_RADIUS", "100"))    # r100
 
+
+
+
+
 def init_push_table():
     conn = get_db(); cur = conn.cursor()
     cur.execute("""CREATE TABLE IF NOT EXISTS push_subscriptions(
         id INTEGER PRIMARY KEY,
         endpoint TEXT UNIQUE,
         p256dh TEXT, auth TEXT,
-        filters TEXT,          -- gespeicherte Query (?q=…&price_max=…)
-        max_price INTEGER,     -- optional: Preisobergrenze
+        filters TEXT,
+        max_price INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""")
+    # NEU: pro Abo & Listing nur 1x pushen
+    cur.execute("""CREATE TABLE IF NOT EXISTS push_sent(
+        endpoint TEXT NOT NULL,
+        listing_id INTEGER NOT NULL,
+        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (endpoint, listing_id)
+    )""")
     conn.commit(); conn.close()
-
 init_push_table()
+
 def build_similar_search_url(r):
     def val(k):
         try: return r[k]
@@ -1040,48 +1051,83 @@ _sync_lock = threading.Lock()
 _last_sync_ts = 0.0
 
 def _notify_matches(new_rows):
+    # new_rows: sqlite3.Row[] aus listings
     conn = get_db(); cur = conn.cursor()
     subs = list(cur.execute("SELECT endpoint,p256dh,auth,filters,max_price FROM push_subscriptions"))
-    conn.close()
+
     for r in new_rows:
+        rid = int(r["id"])
+        price = r["price_eur"]
+
         for (endpoint,p256dh,auth,filters,max_price) in subs:
-            # Filter prüfen
+            # Schon gepusht? -> überspringen
+            chk = cur.execute("SELECT 1 FROM push_sent WHERE endpoint=? AND listing_id=?", (endpoint, rid)).fetchone()
+            if chk: 
+                continue
+
+            # Filter aus Abo anwenden (vereinfacht: price_max/km_max/plz/city/posted_days)
             params = {}
             if filters:
                 from urllib.parse import parse_qs
                 for k,v in parse_qs(filters, keep_blank_values=True).items():
-                    params[k] = v[0] if v else ""
-            where_sql, args, _ = build_query(params)
-            # Ist r in der gefilterten Menge?
-            # (vereinfachter Check: wir prüfen nur Preis/PLZ/City/KM/EZ gegen params)
-            ok = True
-            if "price_max" in params and r["price_eur"] and int(r["price_eur"]) > int(params["price_max"] or 0):
-                ok = False
-            if "km_max" in params and r["km"] and int(r["km"]) > int(params["km_max"] or 0):
-                ok = False
-            if max_price and r["price_eur"] and int(r["price_eur"]) > int(max_price):
-                ok = False
-            if not ok: continue
+                    params[k] = v[0] if isinstance(v, list) and v else (v if isinstance(v,str) else "")
 
+            ok = True
+            # Preislimits
+            if "price_max" in params and price is not None:
+                try:
+                    if int(price) > int(params["price_max"] or 0): ok = False
+                except: pass
+            if max_price and price is not None:
+                try:
+                    if int(price) > int(max_price): ok = False
+                except: pass
+            # km_max
+            if ok and "km_max" in params and r["km"] is not None:
+                try:
+                    if int(r["km"]) > int(params["km_max"] or 0): ok = False
+                except: pass
+            # PLZ prefix
+            if ok and params.get("postal_prefix"):
+                if not (r["postal_code"] or "").startswith(params["postal_prefix"]):
+                    ok = False
+            # City contains
+            if ok and params.get("city"):
+                if params["city"].lower() not in (r["city"] or "").lower():
+                    ok = False
+            # posted_days (nur „neu“ in X Tagen)
+            if ok and params.get("posted_days"):
+                try:
+                    pd = int(params["posted_days"]); 
+                    if pd >= 0 and not r["posted_at"]:
+                        ok = False
+                except: pass
+
+            if not ok:
+                continue
+
+            # Push senden
             payload = {
-              "title": "Neues günstiges Angebot",
-              "body": f"{r['title']} – {r['price_eur']} € • {r['city'] or ''}",
-              "url": r["url"]
+                "title": "Neues Angebot",
+                "body": f"{r['title']} — {r['price_eur'] or '—'} € • {r['city'] or ''}",
+                "url": r["url"]
             }
             try:
                 webpush(
-                  subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
-                  data=json.dumps(payload),
-                  vapid_private_key=VAPID_PRIVATE_PEM,
-                  vapid_claims={"sub": PUSH_SUBJECT},
+                    subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
+                    data=json.dumps(payload),
+                    vapid_private_key=VAPID_PRIVATE_PEM,
+                    vapid_claims={"sub": PUSH_SUBJECT},
                 )
+                # Markiere als gesendet (Dedupe)
+                cur.execute("INSERT OR IGNORE INTO push_sent(endpoint, listing_id) VALUES(?,?)", (endpoint, rid))
+                conn.commit()
             except WebPushException:
-                # Abo kaputt → löschen
-                conn = get_db(); c2 = conn.cursor()
-                c2.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
-                conn.commit(); conn.close()
+                # Abo defekt -> löschen
+                cur.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+                conn.commit()
 
-    return
+    conn.close()
 
 
 @app.get("/api/sync")
@@ -1108,17 +1154,25 @@ def api_sync():
         changed = (res.get("stored", 0) > 0)
 
         if changed:
-            # jüngste Einträge holen und Benachrichtigungen senden
-            conn = get_db(); cur = conn.cursor()
-            cur.execute("""
-                SELECT id,title,price_eur,km,city,url,posted_at
-                FROM listings
-                ORDER BY posted_at DESC, last_seen DESC
-                LIMIT 20
-            """)
-            new_rows = cur.fetchall()
-            conn.close()
-            _notify_matches(new_rows)
+          conn = get_db(); cur = conn.cursor()
+    # „Neu“: zuletzt gesehen == erstmalig gesehen (falls first_seen existiert), sonst die jüngsten per posted_at
+          try:
+              cur.execute("""
+                  SELECT id,title,price_eur,km,city,url,posted_at
+                  FROM listings
+                  WHERE posted_at IS NOT NULL
+                  ORDER BY posted_at DESC, last_seen DESC
+                  LIMIT 50
+              """)
+          except Exception:
+              cur.execute("""
+                  SELECT id,title,price_eur,km,city,url,posted_at
+                  FROM listings
+                  ORDER BY last_seen DESC
+                  LIMIT 50
+              """)
+        new_rows = cur.fetchall(); conn.close()
+        _notify_matches(new_rows)
 
         return {"ok": True, **res, "changed": changed}
     finally:
