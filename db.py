@@ -60,6 +60,18 @@ def init_db():
     cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_postal  ON listings(postal_code)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_city    ON listings(city)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_title   ON listings(title)")
+        # --- MIGRATION: neue Spalten für Detaildaten (Beschreibung + Bilder) ---
+    # idempotent: wenn Spalte existiert -> try/except verhindert Crash
+    try:
+        cur.execute("ALTER TABLE listings ADD COLUMN description TEXT")
+    except Exception:
+        pass
+
+    try:
+        cur.execute("ALTER TABLE listings ADD COLUMN image_urls_json TEXT")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 

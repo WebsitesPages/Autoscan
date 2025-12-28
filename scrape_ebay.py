@@ -7,6 +7,218 @@ from bs4 import BeautifulSoup
 from db import init_db, upsert_listing
 from typing import Optional, List, Dict, Tuple
 import os  # neu
+import json
+import re
+from bs4 import BeautifulSoup
+from typing import Any, Dict, List, Optional
+
+
+def _clean_text(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip())
+
+
+def parse_kleinanzeigen_viewad_html(html: str) -> Dict[str, Any]:
+    """
+    Extrahiert Bilder, Titel, Preis, Ort, Datum, Details, Ausstattung, Beschreibung aus
+    einem Kleinanzeigen 'viewad' HTML.
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    # --- Titel
+    title_el = soup.select_one("#viewad-title")
+    title = _clean_text(title_el.get_text(" ", strip=True)) if title_el else None
+
+    # --- Preis (sichtbar)
+    price_el = soup.select_one("#viewad-price")
+    price_text = _clean_text(price_el.get_text(" ", strip=True)) if price_el else None
+
+    # --- Preis (meta)
+    price_meta_el = soup.select_one('#viewad-main-info meta[itemprop="price"]')
+    price_meta = price_meta_el.get("content") if price_meta_el else None
+
+    # --- Ort
+    loc_el = soup.select_one("#viewad-locality")
+    locality = _clean_text(loc_el.get_text(" ", strip=True)) if loc_el else None
+
+    # --- Datum (steht bei dir im #viewad-extra-info)
+    date_text = None
+    extra = soup.select_one("#viewad-extra-info")
+    if extra:
+        # erstes <span> nach dem kalender icon
+        span = extra.select_one("div i.icon-calendar-gray-simple + span")
+        if span:
+            date_text = _clean_text(span.get_text(" ", strip=True))
+
+    # --- Beschreibung
+    desc_el = soup.select_one("#viewad-description-text")
+    description = None
+    if desc_el:
+        # <br> in Zeilenumbrüche umwandeln
+        description = desc_el.get_text("\n", strip=True).strip()
+
+    # --- Details (Marke, Modell, km, EZ, ...)
+    details: Dict[str, str] = {}
+    for li in soup.select("#viewad-details .addetailslist--detail"):
+        # Struktur ist: "Label" + <span class="...--value">Wert</span>
+        value_el = li.select_one(".addetailslist--detail--value")
+        if not value_el:
+            continue
+        value = _clean_text(value_el.get_text(" ", strip=True))
+
+        # label = Text des <li> ohne value-span
+        label_text = li.get_text(" ", strip=True)
+        # entferne value am Ende, falls enthalten
+        if value and label_text.endswith(value):
+            label = _clean_text(label_text[: -len(value)])
+        else:
+            label = label_text
+        label = _clean_text(label)
+
+        if label:
+            details[label] = value
+
+    # --- Ausstattung / Features
+    features = [_clean_text(x.get_text(" ", strip=True)) for x in soup.select("#viewad-configuration .checktag")]
+    features = [f for f in features if f]
+
+    # --- Bilder: 1) ld+json contentUrl  2) img data-imgsrc/src
+    image_urls: List[str] = []
+
+    # 1) ld+json
+    for sc in soup.select('script[type="application/ld+json"]'):
+        raw = sc.string or sc.get_text(strip=True)
+        raw = raw.strip() if raw else ""
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        # manche Seiten haben Arrays; hier ist es ein dict pro Bild
+        if isinstance(data, dict):
+            cu = data.get("contentUrl")
+            if isinstance(cu, str) and "img.kleinanzeigen.de" in cu:
+                image_urls.append(cu)
+
+    # 2) img tags (thumbnails + gallery)
+    for img in soup.select("img"):
+        u = img.get("data-imgsrc") or img.get("src")
+        if isinstance(u, str) and "img.kleinanzeigen.de/api/v1/prod-ads/images/" in u:
+            image_urls.append(u)
+
+    # normalize + dedupe (prefer .JPG if present)
+    def normalize(u: str) -> str:
+        return u.strip()
+
+    seen = set()
+    deduped: List[str] = []
+    for u in image_urls:
+        u2 = normalize(u)
+        if not u2 or u2 in seen:
+            continue
+        seen.add(u2)
+        deduped.append(u2)
+
+    # Optional: wenn du lieber die großen JPGs willst, ersetze rule-Parameter nicht blind,
+    # sondern verwende vorrangig contentUrl (endet oft mit ?rule=$_59.JPG).
+    # Wir lassen hier alles drin, weil du es in deinem Prompt als Links nutzen willst.
+
+    # --- Anzeigen-ID
+    ad_id = None
+    # Versuch: aus "Anzeigen-ID" Box
+    for li in soup.select("#viewad-ad-id-box li"):
+        txt = _clean_text(li.get_text(" ", strip=True))
+        if txt.isdigit() and len(txt) >= 8:
+            ad_id = txt
+            break
+
+    # --- Verkäufername (optional)
+    seller_name = None
+    seller_el = soup.select_one("#viewad-profile-box .userprofile-vip a")
+    if seller_el:
+        seller_name = _clean_text(seller_el.get_text(" ", strip=True))
+
+    return {
+        "source": "kleinanzeigen",
+        "ad_id": ad_id,
+        "title": title,
+        "price_text": price_text,
+        "price_meta_eur": price_meta,
+        "locality": locality,
+        "date_posted": date_text,
+        "seller_name": seller_name,
+        "details": details,
+        "features": features,
+        "description": description,
+        "image_urls": deduped,
+    }
+
+
+def build_kfz_gutachter_prompt(listing: Dict[str, Any], max_images: int = 15) -> str:
+    """
+    Baut einen kopierfertigen Prompt: Bildlinks + Infos + Auftrag (Zustand/Preis etc.)
+    """
+    title = listing.get("title") or "Unbekannter Titel"
+    price = listing.get("price_text") or listing.get("price_meta_eur") or "k.A."
+    locality = listing.get("locality") or "k.A."
+    date_posted = listing.get("date_posted") or "k.A."
+    ad_id = listing.get("ad_id") or "k.A."
+
+    images = listing.get("image_urls") or []
+    images = images[:max_images]
+
+    details = listing.get("details") or {}
+    features = listing.get("features") or []
+    description = listing.get("description") or ""
+
+    # formatiere details sauber
+    details_lines = []
+    for k, v in details.items():
+        details_lines.append(f"- {k}: {v}")
+
+    features_lines = [f"- {f}" for f in features]
+
+    image_lines = []
+    for i, u in enumerate(images, start=1):
+        image_lines.append(f"Link {i}: {u}")
+
+    prompt = f"""Du bist ein erfahrener Kfz-Gutachter (Unfall-/Gebrauchtwagenbewertung).
+
+Bitte analysiere diese Kleinanzeigen-Anzeige anhand der folgenden Bilder und Daten.
+
+Bilder:
+{chr(10).join(image_lines) if image_lines else "- (keine Bildlinks gefunden)"}
+
+Anzeigendaten:
+- Anzeigen-ID: {ad_id}
+- Titel: {title}
+- Preis: {price}
+- Ort: {locality}
+- Datum: {date_posted}
+
+Fahrzeugdaten (aus der Anzeige):
+{chr(10).join(details_lines) if details_lines else "- (keine Detaildaten gefunden)"}
+
+Ausstattung / Merkmale:
+{chr(10).join(features_lines) if features_lines else "- (keine Ausstattung gefunden)"}
+
+Beschreibung (Originaltext):
+{description if description else "(keine Beschreibung gefunden)"}
+
+Aufgabenstellung:
+1) Sichtprüfung anhand der Bilder: offensichtliche Unfallschäden, Spaltmaße, Airbag-/Innenraumzustand, Anbauteile, Korrosion, Bereifung/Felgen, Leckagen, Warnhinweise.
+2) Plausibilitätsprüfung der Angaben (z.B. Austauschmotor, km-Stand, EZ, Zustand „beschädigt“, Airbags ausgelöst): welche Risiken/Unklarheiten bestehen?
+3) Grobe Kostenblöcke: was wären typische Reparatur-/Instandsetzungsposten (stichpunktartig), und welche Punkte sind sicher vs. nur vermutet.
+4) Markt-/Preisbewertung: Ist der Preis im aktuellen Zustand plausibel? Nenne eine realistische Preisspanne:
+   - “so wie er steht” (defekt/unrepariert)
+   - “nach Instandsetzung” (wenn wirtschaftlich sinnvoll)
+5) Empfehlung: welche 10 Fragen/Checks muss ich dem Verkäufer stellen bzw. vor Ort prüfen (OBD, Airbagsteuergerät, Rahmen/Träger, Achsgeometrie, Gutachten, Rechnungen Austauschmotor etc.)?
+
+Antworte strukturiert mit Überschriften und klaren Bulletpoints.
+"""
+    return prompt
+
+
 
 KA_AREA_SLUG = os.environ.get("KA_AREA_SLUG", "bayern")
 KA_AREA_CODE = os.environ.get("KA_AREA_CODE", "l5510")
@@ -154,6 +366,8 @@ def parse_detail_page(url: str) -> dict:
     soup = BeautifulSoup(r.text, "lxml")
 
     data: dict = {}
+
+    # --- Details (Marke/Modell/km/EZ/...) ---
     for li in soup.select("#viewad-details li.addetailslist--detail"):
         label = (li.contents[0].strip() if li.contents and isinstance(li.contents[0], str) else "").lower()
         value_el = li.select_one(".addetailslist--detail--value")
@@ -173,6 +387,48 @@ def parse_detail_page(url: str) -> dict:
                 data[key] = int(round(int(kw.group(1)) * 1.3596)) if kw else None
         else:
             data[key] = value
+
+    # --- Beschreibung ---
+    desc_el = soup.select_one("#viewad-description-text")
+    if desc_el:
+        data["description"] = desc_el.get_text("\n", strip=True).strip()
+
+    # --- Bilder sammeln (URLs) ---
+    image_urls = []
+
+    # 1) ld+json contentUrl
+    for sc in soup.select('script[type="application/ld+json"]'):
+        raw = (sc.string or sc.get_text(strip=True) or "").strip()
+        if not raw:
+            continue
+        try:
+            j = json.loads(raw)
+        except Exception:
+            continue
+        if isinstance(j, dict):
+            cu = j.get("contentUrl")
+            if isinstance(cu, str) and "img.kleinanzeigen.de" in cu:
+                image_urls.append(cu)
+
+    # 2) img tags
+    for img in soup.select("img"):
+        u = img.get("data-imgsrc") or img.get("src")
+        if isinstance(u, str) and "img.kleinanzeigen.de/api/v1/prod-ads/images/" in u:
+            image_urls.append(u)
+
+    # dedupe
+    seen = set()
+    deduped = []
+    for u in image_urls:
+        u = (u or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        deduped.append(u)
+
+    if deduped:
+        data["image_urls_json"] = json.dumps(deduped, ensure_ascii=False)
+
     return data
 
 # ------------------------------------------------------------

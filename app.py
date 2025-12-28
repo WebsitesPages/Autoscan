@@ -416,6 +416,61 @@ def api_table():
     conn.close()
 
     return render_template_string(ROWS_ONLY_TPL, rows=rows)
+@app.get("/api/prompt")
+def api_prompt():
+    lid = (request.args.get("id") or "").strip()
+    if not lid:
+        return {"ok": False, "error": "missing id"}, 400
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT id, title, price_eur, km, city, posted_at, url, ez_text,
+               brand, model, fuel, gearbox, first_reg,
+               description, image_urls_json
+        FROM listings
+        WHERE id = ?
+    """, (lid,))
+    r = cur.fetchone()
+    conn.close()
+
+    if not r:
+        return {"ok": False, "error": "not found"}, 404
+
+    # Bilder aus JSON
+    image_urls = []
+    try:
+        if r["image_urls_json"]:
+            image_urls = json.loads(r["image_urls_json"])
+            if not isinstance(image_urls, list):
+                image_urls = []
+    except Exception:
+        image_urls = []
+
+    # Listing-Objekt im Format deines Prompt-Builders
+    listing = {
+        "title": r["title"] or "",
+        "price_text": (f"{r['price_eur']} €" if r["price_eur"] is not None else "k.A."),
+        "locality": r["city"] or "k.A.",
+        "date_posted": r["posted_at"] or "k.A.",
+        "ad_id": r["id"],
+        "details": {
+            "Marke": (r["brand"] or ""),
+            "Modell": (r["model"] or ""),
+            "EZ": (r["first_reg"] or r["ez_text"] or ""),
+            "KM": (str(r["km"]) if r["km"] is not None else ""),
+            "Kraftstoff": (r["fuel"] or ""),
+            "Getriebe": (r["gearbox"] or ""),
+        },
+        "features": [],
+        "description": r["description"] or "",
+        "image_urls": image_urls,
+    }
+
+    from scrape_ebay import build_kfz_gutachter_prompt
+    prompt = build_kfz_gutachter_prompt(listing, max_images=15)
+
+    return {"ok": True, "prompt": prompt}, 200
 
 
 TPL = r"""
@@ -580,6 +635,7 @@ TPL = r"""
               <th class="px-3 py-3">Bilder</th>
               <th class="px-3 py-3">Zeit</th>
               <th class="px-3 py-3">Link</th>
+              <th class="px-3 py-3">Prompt</th>
               <th class="px-3 py-3">Vergleichbar</th>
               <th class="px-3 py-3">AutoScout</th>
               <th class="px-3 py-3">Carwow</th>
@@ -609,15 +665,33 @@ TPL = r"""
       {% else %}—{% endif %}
     </td>
     <td class="px-3 py-3">
-      {% if r['posted_at'] %}
-        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-800">{{ r['posted_at'] }}</span>
-      {% else %}
-        <span class="text-gray-400">—</span>
-      {% endif %}
-    </td>
-    <td class="px-3 py-3">
-      <a class="text-indigo-700 hover:text-indigo-900 underline decoration-2" href="{{ r['url'] }}" target="_blank" rel="noopener">Öffnen</a>
-    </td>
+  {% if r['posted_at'] %}
+    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-emerald-100 text-emerald-800">{{ r['posted_at'] }}</span>
+  {% else %}
+    <span class="text-gray-400">—</span>
+  {% endif %}
+</td>
+
+<!-- NEU: Prompt-Button -->
+<td class="px-3 py-3 text-center">
+  <button type="button"
+          class="px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50 text-xs font-medium"
+          data-prompt-btn
+          data-row-id="{{ r['id'] }}"
+          data-title="{{ (r['title'] or '')|e }}"
+          data-url="{{ (r['url'] or '')|e }}"
+          data-price="{{ r['price_eur'] or '' }}"
+          data-km="{{ r['km'] or '' }}"
+          data-city="{{ (r['city'] or '')|e }}"
+          data-posted="{{ (r['posted_at'] or '')|e }}">
+    Prompt
+  </button>
+</td>
+
+<td class="px-3 py-3">
+  <a class="text-indigo-700 hover:text-indigo-900 underline decoration-2" href="{{ r['url'] }}" target="_blank" rel="noopener">Öffnen</a>
+</td>
+
 
     <!-- NEU: Vergleichbar – nur wenn Marke & Modell vorhanden (build_similar_search_url != "") -->
     <td class="px-3 py-3">
@@ -659,7 +733,7 @@ TPL = r"""
 {% endfor %}
 
             {% if not rows %}
-              <tr><td colspan="9" class="px-4 py-10 text-center text-gray-500">Keine Treffer für diese Filter.</td></tr>
+              <tr><td colspan="13" class="px-4 py-10 text-center text-gray-500">Keine Treffer für diese Filter.</td></tr>
             {% endif %}
           </tbody>
         </table>
@@ -669,6 +743,47 @@ TPL = r"""
     <footer class="pt-2 text-xs text-gray-500">
   © Autoscan • Demo-UI. Verbesserungen: Deal-Score, Favoriten, CSV-Export, Dark-Mode.
 </footer>
+<!-- Prompt Modal -->
+<div id="promptModal"
+     class="fixed inset-0 z-[99999] hidden"
+     aria-hidden="true">
+  <div id="promptBackdrop" class="absolute inset-0 bg-black/40"></div>
+
+  <div class="relative mx-auto mt-24 w-[92vw] max-w-2xl">
+    <div class="bg-white rounded-2xl shadow-xl ring-1 ring-gray-200 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-3 border-b">
+        <div>
+          <div class="text-sm font-semibold text-gray-900">Prompt</div>
+          <div id="promptMeta" class="text-xs text-gray-500"></div>
+        </div>
+        <button type="button" id="promptClose"
+                class="p-2 rounded-lg hover:bg-gray-100"
+                aria-label="Schließen">
+          ✕
+        </button>
+      </div>
+
+      <div class="p-4 space-y-3">
+        <textarea id="promptText"
+                  class="w-full h-56 rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"
+                  placeholder="Prompt hier einfügen oder schreiben..."></textarea>
+
+        <div class="flex items-center justify-end gap-2">
+          <span id="promptCopyMsg" class="mr-auto text-xs text-gray-500"></span>
+
+          <button type="button" id="promptCopyBtn"
+                  class="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-black text-sm">
+            ⧉ Kopieren
+          </button>
+          <button type="button" id="promptDoneBtn"
+                  class="px-3 py-2 rounded-xl border border-gray-300 hover:bg-gray-50 text-sm">
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
   </main>
 <script>
@@ -970,9 +1085,112 @@ document.getElementById('pushBtn')?.addEventListener('click', (e) => {
   }
 })();
 
+// --- Prompt Modal Logic (MUSS innerhalb DOMContentLoaded sein) ---
+const promptModal = document.getElementById('promptModal');
+const promptBackdrop = document.getElementById('promptBackdrop');
+const promptClose = document.getElementById('promptClose');
+const promptDoneBtn = document.getElementById('promptDoneBtn');
+const promptText = document.getElementById('promptText');
+const promptMeta = document.getElementById('promptMeta');
+const promptCopyBtn = document.getElementById('promptCopyBtn');
+const promptCopyMsg = document.getElementById('promptCopyMsg');
+
+function openPromptModal(metaText) {
+  if (!promptModal) return;
+  if (promptCopyMsg) promptCopyMsg.textContent = '';
+  if (promptMeta) promptMeta.textContent = metaText || '';
+  if (promptText) promptText.value = ''; // leer starten
+  promptModal.classList.remove('hidden');
+  promptModal.setAttribute('aria-hidden', 'false');
+  setTimeout(() => promptText?.focus(), 50);
+}
+
+function closePromptModal() {
+  if (!promptModal) return;
+  promptModal.classList.add('hidden');
+  promptModal.setAttribute('aria-hidden', 'true');
+}
+
+function bindPromptButtons(scope) {
+  const root = scope || document;
+  root.querySelectorAll('[data-prompt-btn]').forEach(btn => {
+    // Doppelt-Binding vermeiden
+    if (btn.dataset.promptBound === '1') return;
+    btn.dataset.promptBound = '1';
+
+        btn.addEventListener('click', async () => {
+      const title  = btn.getAttribute('data-title')  || '';
+      const id     = btn.getAttribute('data-row-id') || '';
+      const price  = btn.getAttribute('data-price')  || '';
+      const km     = btn.getAttribute('data-km')     || '';
+      const city   = btn.getAttribute('data-city')   || '';
+      const posted = btn.getAttribute('data-posted') || '';
+
+      const meta = `${title} • ID ${id}` +
+        (price ? ` • ${price} €` : '') +
+        (km ? ` • ${km} km` : '') +
+        (city ? ` • ${city}` : '') +
+        (posted ? ` • ${posted}` : '');
+
+      openPromptModal(meta);
+
+      // Prompt vom Backend holen und in Textarea schreiben
+      try {
+        if (promptText) promptText.value = 'Lade Prompt…';
+        const r = await fetch('/api/prompt?id=' + encodeURIComponent(id), { cache: 'no-store' });
+        const j = await r.json().catch(() => null);
+
+        if (r.ok && j && j.ok && j.prompt) {
+          if (promptText) promptText.value = j.prompt;
+        } else {
+          if (promptText) promptText.value = 'Konnte Prompt nicht laden (evtl. noch keine Detaildaten gespeichert).';
+        }
+      } catch (e) {
+        if (promptText) promptText.value = 'Netzwerkfehler beim Laden des Prompts.';
+      }
+    });
+
+  });
+}
+
+// initial binden
+bindPromptButtons(document);
+
+// WICHTIG: nach reloadTable() erneut binden, weil tbody.innerHTML ersetzt wird.
+// Einfach im reloadTable nach tbody.innerHTML = html; aufrufen:
+const _origReloadTable = reloadTable;
+reloadTable = async function() {
+  await _origReloadTable();
+  bindPromptButtons(document);
+};
+
+promptBackdrop?.addEventListener('click', closePromptModal);
+promptClose?.addEventListener('click', closePromptModal);
+promptDoneBtn?.addEventListener('click', closePromptModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && promptModal && !promptModal.classList.contains('hidden')) {
+    closePromptModal();
+  }
+});
+
+promptCopyBtn?.addEventListener('click', async () => {
+  try {
+    const txt = promptText?.value || '';
+    await navigator.clipboard.writeText(txt);
+    if (promptCopyMsg) {
+      promptCopyMsg.textContent = 'Kopiert.';
+      setTimeout(() => { promptCopyMsg.textContent = ''; }, 1500);
+    }
+  } catch (e) {
+    if (promptCopyMsg) promptCopyMsg.textContent = 'Kopieren nicht möglich (Browser-Rechte).';
+  }
+});
+
 
   setInterval(autosync, REFRESH_MS);
 });
+
+
 </script>
 
 
@@ -1003,7 +1221,25 @@ ROWS_ONLY_TPL = r"""
   <td class="px-3 py-3">{{ r['ez_text'] or '—' }}</td>
   <td class="px-3 py-3 text-center">{{ r['pics'] if r['pics'] is not none else '—' }}</td>
   <td class="px-3 py-3">{{ r['posted_at'] or '—' }}</td>
-  <td class="px-3 py-3"><a href="{{ r['url'] }}" target="_blank" class="text-indigo-600 underline">Öffnen</a></td>
+
+<!-- NEU: Prompt-Button -->
+<td class="px-3 py-3 text-center">
+  <button type="button"
+          class="px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50 text-xs font-medium"
+          data-prompt-btn
+          data-row-id="{{ r['id'] }}"
+          data-title="{{ (r['title'] or '')|e }}"
+          data-url="{{ (r['url'] or '')|e }}"
+          data-price="{{ r['price_eur'] or '' }}"
+          data-km="{{ r['km'] or '' }}"
+          data-city="{{ (r['city'] or '')|e }}"
+          data-posted="{{ (r['posted_at'] or '')|e }}">
+    Prompt
+  </button>
+</td>
+
+<td class="px-3 py-3"><a href="{{ r['url'] }}" target="_blank" class="text-indigo-600 underline">Öffnen</a></td>
+
 <td class="px-3 py-3">
   {% if r['brand'] and r['brand']|trim and r['model'] and r['model']|trim %}
     {% set sim = build_similar_search_url(r) %}
