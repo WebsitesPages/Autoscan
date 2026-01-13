@@ -40,7 +40,7 @@ def sw():
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["Service-Worker-Allowed"] = "/"
     return resp
-    
+
 @app.after_request
 def add_no_cache_headers(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
@@ -242,7 +242,7 @@ def build_query(params):
         where.append("title LIKE ?")
         args.append(f"%{params['q']}%")
 
-    # Preisbereich
+        # Preisbereich
     pmin = parse_int(params.get("price_min"))
     pmax = parse_int(params.get("price_max"))
     if pmin is not None:
@@ -251,6 +251,32 @@ def build_query(params):
     if pmax is not None:
         where.append("price_eur <= ?")
         args.append(pmax)
+
+    # Erstzulassung (EZ) min/max (Jahr)
+    ez_min = parse_int(params.get("ez_min"))
+    ez_max = parse_int(params.get("ez_max"))
+    if ez_min is not None or ez_max is not None:
+        # robust: Jahr aus first_reg ODER ez_text holen
+        # first_reg kann "YYYY-..." ODER "MM/YYYY" sein
+        ez_year_sql = """
+        CASE
+          WHEN first_reg IS NOT NULL AND length(first_reg) >= 4 THEN
+            CASE
+              WHEN substr(first_reg, 5, 1) = '-' THEN CAST(substr(first_reg, 1, 4) AS INTEGER)      -- "YYYY-.."
+              ELSE CAST(substr(first_reg, length(first_reg)-3, 4) AS INTEGER)                       -- "...YYYY" z.B. "03/2009"
+            END
+          WHEN ez_text IS NOT NULL AND length(ez_text) >= 4 THEN
+            CAST(substr(ez_text, length(ez_text)-3, 4) AS INTEGER)                                  -- "...YYYY"
+          ELSE NULL
+        END
+        """
+        if ez_min is not None:
+            where.append(f"({ez_year_sql}) >= ?")
+            args.append(ez_min)
+        if ez_max is not None:
+            where.append(f"({ez_year_sql}) <= ?")
+            args.append(ez_max)
+
 
     # Kilometer max
     km_max = parse_int(params.get("km_max"))
@@ -310,6 +336,8 @@ def index():
     q = request.args.get("q", "")
     price_min = request.args.get("price_min", "")
     price_max = request.args.get("price_max", "")
+    ez_min = request.args.get("ez_min", "")
+    ez_max = request.args.get("ez_max", "")
     km_max = request.args.get("km_max", "")
     postal_prefix = request.args.get("postal_prefix", "")
     city = request.args.get("city", "")
@@ -325,6 +353,9 @@ def index():
         "q": q,
         "price_min": price_min,
         "price_max": price_max,
+        "ez_min": ez_min,
+        "ez_max": ez_max,
+
         "km_max": km_max,
         "postal_prefix": postal_prefix,
         "city": city,
@@ -379,6 +410,8 @@ def api_table():
     q = request.args.get("q", "")
     price_min = request.args.get("price_min", "")
     price_max = request.args.get("price_max", "")
+    ez_min = request.args.get("ez_min", "")
+    ez_max = request.args.get("ez_max", "")
     km_max = request.args.get("km_max", "")
     postal_prefix = request.args.get("postal_prefix", "")
     city = request.args.get("city", "")
@@ -393,6 +426,8 @@ def api_table():
         "q": q,
         "price_min": price_min,
         "price_max": price_max,
+        "ez_min": ez_min,
+        "ez_max": ez_max,
         "km_max": km_max,
         "postal_prefix": postal_prefix,
         "city": city,
@@ -517,18 +552,34 @@ TPL = r"""
                  class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
         </label>
 
-        <div class="grid grid-cols-2 gap-3">
-          <label class="space-y-1">
-            <span class="text-xs font-medium text-gray-600">Preis min (€)</span>
-            <input type="number" name="price_min" value="{{ params.price_min }}" min="0"
-                   class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
-          </label>
-          <label class="space-y-1">
-            <span class="text-xs font-medium text-gray-600">Preis max (€)</span>
-            <input type="number" name="price_max" value="{{ params.price_max }}" min="0"
-                   class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
-          </label>
+                <div class="space-y-3">
+          <div class="grid grid-cols-2 gap-3">
+            <label class="space-y-1">
+              <span class="text-xs font-medium text-gray-600">Preis min (€)</span>
+              <input type="number" name="price_min" value="{{ params.price_min }}" min="0"
+                     class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
+            </label>
+            <label class="space-y-1">
+              <span class="text-xs font-medium text-gray-600">Preis max (€)</span>
+              <input type="number" name="price_max" value="{{ params.price_max }}" min="0"
+                     class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
+            </label>
+          </div>
+
+          <div class="grid grid-cols-2 gap-3">
+            <label class="space-y-1">
+              <span class="text-xs font-medium text-gray-600">EZ min (Jahr)</span>
+              <input type="number" name="ez_min" value="{{ params.ez_min }}" min="1900" max="2100" placeholder="z. B. 2013"
+                     class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
+            </label>
+            <label class="space-y-1">
+              <span class="text-xs font-medium text-gray-600">EZ max (Jahr)</span>
+              <input type="number" name="ez_max" value="{{ params.ez_max }}" min="1900" max="2100" placeholder="z. B. 2025"
+                     class="w-full rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-indigo-500"/>
+            </label>
+          </div>
         </div>
+
 
         <label class="space-y-1">
           <span class="text-xs font-medium text-gray-600">Kilometer max</span>
@@ -1017,7 +1068,7 @@ function determineEnvironment() {
   const hasSW = 'serviceWorker' in navigator;
   const hasPushManager = 'PushManager' in window;
   const pushSupported = hasSW && hasPushManager;
-  
+
   return { isIOS, isStandalone, pushSupported, hasSW };
 }
 
@@ -1078,7 +1129,7 @@ document.getElementById('pushBtn')?.addEventListener('click', (e) => {
 (function showIOSHint() {
   const env = determineEnvironment();
   const msgEl = document.getElementById('mobileMsg');
-  
+
   if (msgEl && env.isIOS && !env.isStandalone) {
     msgEl.innerHTML = '💡 <strong>iOS-Tipp:</strong> Für Push-Benachrichtigungen fügen Sie diese Seite zum Home-Bildschirm hinzu (Teilen → "Zum Home-Bildschirm").';
     msgEl.className = 'mt-2 text-xs text-indigo-600 bg-indigo-50 p-2 rounded';
