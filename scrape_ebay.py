@@ -154,67 +154,104 @@ def parse_kleinanzeigen_viewad_html(html: str) -> Dict[str, Any]:
     }
 
 
-def build_kfz_gutachter_prompt(listing: Dict[str, Any], max_images: int = 15) -> str:
-    """
-    Baut einen kopierfertigen Prompt: Bildlinks + Infos + Auftrag (Zustand/Preis etc.)
-    """
-    title = listing.get("title") or "Unbekannter Titel"
-    price = listing.get("price_text") or listing.get("price_meta_eur") or "k.A."
-    locality = listing.get("locality") or "k.A."
-    date_posted = listing.get("date_posted") or "k.A."
-    ad_id = listing.get("ad_id") or "k.A."
-
-    images = listing.get("image_urls") or []
-    images = images[:max_images]
+def build_haendler_prompt(listing: dict, max_images: int = 15) -> str:
+    title = listing.get("title","")
+    price_text = listing.get("price_text","")
+    locality = listing.get("locality","")
+    date_posted = listing.get("date_posted","")
+    ad_id = listing.get("ad_id","")
+    desc = (listing.get("description") or "").strip()
 
     details = listing.get("details") or {}
-    features = listing.get("features") or []
-    description = listing.get("description") or ""
+    brand = details.get("Marke","")
+    model = details.get("Modell","")
+    ez = details.get("EZ","")
+    km = details.get("KM","")
+    fuel = details.get("Kraftstoff","")
+    gearbox = details.get("Getriebe","")
+    power_ps = details.get("Leistung","") or listing.get("power_ps","")
 
-    # formatiere details sauber
-    details_lines = []
-    for k, v in details.items():
-        details_lines.append(f"- {k}: {v}")
+    url = listing.get("url","")
+    imgs = listing.get("image_urls") or []
+    imgs = imgs[:max_images]
 
-    features_lines = [f"- {f}" for f in features]
+    img_block = "\n".join(imgs) if imgs else "(keine)"
 
-    image_lines = []
-    for i, u in enumerate(images, start=1):
-        image_lines.append(f"Link {i}: {u}")
+    return f"""Du bist ein erfahrener Gebrauchtwagenhändler (Ankauf + Verkauf) in Deutschland.
+Dein Ziel: Inserate schnell und kritisch bewerten, Ankauf-Risiken erkennen, realistische Kosten abschätzen und eine klare Entscheidung treffen.
 
-    prompt = f"""Du bist ein erfahrener Kfz-Gutachter (Unfall-/Gebrauchtwagenbewertung).
+WICHTIG:
+- Denke wie ein Händler: Marge, Standzeit-Risiko, Reparaturrisiko, Prüfbarkeit, Verkaufbarkeit.
+- Sei konkret. Wenn Infos fehlen: stelle präzise Rückfragen.
+- Keine langen Erklärtexte. Arbeite strukturiert, knallhart, praxisnah.
+- Nutze deutsche Begriffe (TÜV/HU, Scheckheft, Unfallfrei, NUR Export, Bastler, Gewährleistung, Ankaufspreis, VK-Preis).
 
-Bitte analysiere diese Kleinanzeigen-Anzeige anhand der folgenden Bilder und Daten.
+INSERAT:
+Titel: {title}
+Preis: {price_text}
+Ort: {locality}
+Online seit: {date_posted}
+ID: {ad_id}
+URL: {url}
 
-Bilder:
-{chr(10).join(image_lines) if image_lines else "- (keine Bildlinks gefunden)"}
+FAHRZEUGDATEN (falls vorhanden):
+Marke: {brand}
+Modell: {model}
+EZ: {ez}
+KM: {km}
+Kraftstoff: {fuel}
+Getriebe: {gearbox}
+Leistung: {power_ps}
 
-Anzeigendaten:
-- Anzeigen-ID: {ad_id}
-- Titel: {title}
-- Preis: {price}
-- Ort: {locality}
-- Datum: {date_posted}
+BESCHREIBUNG:
+{desc if desc else "(keine)"}
 
-Fahrzeugdaten (aus der Anzeige):
-{chr(10).join(details_lines) if details_lines else "- (keine Detaildaten gefunden)"}
+BILDER (URLs, falls vorhanden):
+{img_block}
 
-Ausstattung / Merkmale:
-{chr(10).join(features_lines) if features_lines else "- (keine Ausstattung gefunden)"}
+AUFGABE:
+Erstelle eine Händlerbewertung in genau diesem Format:
 
-Beschreibung (Originaltext):
-{description if description else "(keine Beschreibung gefunden)"}
+1) Kurzfazit (1–2 Zeilen)
+- Kaufen / Prüfen / Lassen + Begründung in Stichpunkten
 
-Aufgabenstellung:
-1) Sichtprüfung anhand der Bilder: offensichtliche Unfallschäden, Spaltmaße, Airbag-/Innenraumzustand, Anbauteile, Korrosion, Bereifung/Felgen, Leckagen, Warnhinweise.
-2) Plausibilitätsprüfung der Angaben (z.B. Austauschmotor, km-Stand, EZ, Zustand „beschädigt“, Airbags ausgelöst): welche Risiken/Unklarheiten bestehen?
-3) Grobe Kostenblöcke: was wären typische Reparatur-/Instandsetzungsposten (stichpunktartig), und welche Punkte sind sicher vs. nur vermutet.
-4) Markt-/Preisbewertung: Ist der Preis im aktuellen Zustand plausibel? Nenne eine realistische Preisspanne:
-   - “so wie er steht” (defekt/unrepariert)
-   - “nach Instandsetzung” (wenn wirtschaftlich sinnvoll)
-5) Empfehlung: welche 10 Fragen/Checks muss ich dem Verkäufer stellen bzw. vor Ort prüfen (OBD, Airbagsteuergerät, Rahmen/Träger, Achsgeometrie, Gutachten, Rechnungen Austauschmotor etc.)?
+2) Händler-Score (0–100)
+- Risiko (0–10)
+- Verkaufbarkeit (0–10)
+- Preisniveau (zu günstig / ok / zu teuer) + kurzer Grund
 
-Antworte strukturiert mit Überschriften und klaren Bulletpoints.
+3) Red Flags (harte Ausschlusskriterien)
+- Liste die wichtigsten Warnsignale aus Titel/Beschreibung/Daten. Wenn etwas fehlt, schreibe "Unbekannt".
+
+4) Must-Check vor Ort (Priorität A/B/C)
+A = Dealbreaker, B = wichtig, C = nice-to-have
+- Technik (Motor/Getriebe/Kühlung/Ölverlust/Abgasanlage/Elektrik)
+- Karosserie (Unfallspuren, Spaltmaße, Lack, Rost, Unterboden)
+- Innenraum (Abnutzung vs. KM plausibel)
+- Dokumente (Service, Rechnungen, HU, Schlüssel, CoC)
+- Probefahrt-Checkliste (konkret)
+
+5) Kostenabschätzung (grob, in €)
+- Sofortmaßnahmen (z.B. HU, Reifen, Bremsen, Service)
+- Typische Risikoposten (modellabhängig, falls ableitbar)
+- Puffer/Reserve
+=> Schätze einen sinnvollen Gesamtpuffer (min/realistisch/max)
+
+6) Händler-Strategie
+- Zielkunde (wer kauft das später?)
+- Empfohlene Verkaufsplattform (Kleinanzeigen, mobile, AutoScout) + warum
+- Erwartete Standzeit (kurz/mittel/lang) mit Begründung
+
+7) Preis- & Verhandlungsplan
+- Fairer Ankaufspreis (Zielbereich) aus Händlersicht
+- Max. Ankaufspreis (hartes Limit)
+- Empfohlener VK-Preis (Zielbereich)
+- Verhandlungsargumente (5 konkrete Sätze)
+
+8) Fragen an den Verkäufer (10 präzise Fragen)
+- Fokus: Unfall, Wartung, Mängel, Kaltstart, Ölverbrauch, Fehlermeldungen, Besitz, Grund Verkauf, HU, Schlüssel, Reparaturen, Rechnungen.
+
+Antworte nur im geforderten Format.
 """
     return prompt
 
@@ -435,14 +472,12 @@ def parse_detail_page(url: str) -> dict:
 # Such-URLs
 # ------------------------------------------------------------
 def build_ka_search_url(page: int = 1) -> str:
-    """
-    Baut eine SRP-URL:
-    https://www.kleinanzeigen.de/s-autos/<area>/anzeige:angebote/ [preis:min:max/]
-    c216<l-code>r<radius> [+ autos.km_i:,:<km_max>]
-    und optional /seite:2/ für page=2
-    """
     base = "https://www.kleinanzeigen.de/s-autos/"
     path = ""
+
+    # NEU: nur Privatverkäufer
+    path += "anbieter:privat/"
+
     if KA_AREA_SLUG:
         path += f"{KA_AREA_SLUG}/"
     path += "anzeige:angebote/"
@@ -450,7 +485,6 @@ def build_ka_search_url(page: int = 1) -> str:
     if KA_PRICE_MIN or KA_PRICE_MAX:
         path += f"preis:{KA_PRICE_MIN}:{KA_PRICE_MAX}/"
 
-    # Pagehandling: „/seite:2/“ wird direkt hinter dem Pfad eingeschoben
     if page >= 2:
         path += "seite:2/"
 
@@ -458,9 +492,10 @@ def build_ka_search_url(page: int = 1) -> str:
 
     parts = [cblock]
     if KA_KM_MAX:
-        parts.append(f"autos.km_i:%2C{KA_KM_MAX}")  # nur Obergrenze
+        parts.append(f"autos.km_i:%2C{KA_KM_MAX}")
 
     return base + path + "+".join(parts)
+
 
 # Statt fixer Liste dynamisch Page 1 + 2
 SEARCH_URLS = [build_ka_search_url(1), build_ka_search_url(2)]

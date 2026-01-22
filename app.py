@@ -74,11 +74,11 @@ def init_push_table():
     )""")
     # NEU: pro Abo & Listing nur 1x pushen
     cur.execute("""CREATE TABLE IF NOT EXISTS push_sent(
-        endpoint TEXT NOT NULL,
-        listing_id INTEGER NOT NULL,
-        sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (endpoint, listing_id)
-    )""")
+    endpoint TEXT NOT NULL,
+    listing_id TEXT NOT NULL,
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (endpoint, listing_id)
+)""")
     conn.commit(); conn.close()
 init_push_table()
 
@@ -451,6 +451,7 @@ def api_table():
     conn.close()
 
     return render_template_string(ROWS_ONLY_TPL, rows=rows)
+
 @app.get("/api/prompt")
 def api_prompt():
     lid = (request.args.get("id") or "").strip()
@@ -502,8 +503,9 @@ def api_prompt():
         "image_urls": image_urls,
     }
 
-    from scrape_ebay import build_kfz_gutachter_prompt
-    prompt = build_kfz_gutachter_prompt(listing, max_images=15)
+    from scrape_ebay import build_haendler_prompt
+    prompt = build_haendler_prompt(listing, max_images=15)
+
 
     return {"ok": True, "prompt": prompt}, 200
 
@@ -640,16 +642,31 @@ TPL = r"""
 </div>
 <p id="mobileMsg" class="mt-2 text-xs text-gray-600"></p>
 
-      <div class="mt-4 flex items-center justify-end gap-2">
-      <button id="pushBtn"
-        type="button"
-        class="px-3 py-2 rounded-xl bg-indigo-600 text-white">
-  🔔 Benachrichtigen
-</button>
+      <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+  <button id="pushManageBtn"
+          type="button"
+          class="w-full sm:w-auto px-3 py-2 rounded-xl border border-gray-300 hover:bg-gray-50 text-sm">
+    Benachrichtigungen verwalten
+  </button>
 
-        <a href="{{ url_for('index') }}" class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">Zurücksetzen</a>
-        <button class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">Filtern</button>
-      </div>
+  <div class="flex flex-wrap items-center justify-end gap-2">
+    <button id="pushBtn"
+            type="button"
+            class="px-3 py-2 rounded-xl bg-indigo-600 text-white">
+      🔔 Benachrichtigen
+    </button>
+
+    <a href="{{ url_for('index') }}"
+       class="px-4 py-2 rounded-xl border border-gray-300 hover:bg-gray-50">
+      Zurücksetzen
+    </a>
+
+    <button class="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm">
+      Filtern
+    </button>
+  </div>
+</div>
+
     </form>
 
     <!-- Summary / Pagination -->
@@ -685,8 +702,8 @@ TPL = r"""
               <th class="px-3 py-3">EZ</th>
               <th class="px-3 py-3">Bilder</th>
               <th class="px-3 py-3">Zeit</th>
-              <th class="px-3 py-3">Link</th>
               <th class="px-3 py-3">Prompt</th>
+              <th class="px-3 py-3">Link</th>
               <th class="px-3 py-3">Vergleichbar</th>
               <th class="px-3 py-3">AutoScout</th>
               <th class="px-3 py-3">Carwow</th>
@@ -828,6 +845,40 @@ TPL = r"""
           </button>
           <button type="button" id="promptDoneBtn"
                   class="px-3 py-2 rounded-xl border border-gray-300 hover:bg-gray-50 text-sm">
+            Schließen
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<!-- Push Subscriptions Modal -->
+<div id="pushModal" class="fixed inset-0 z-[99999] hidden" aria-hidden="true">
+  <div id="pushBackdrop" class="absolute inset-0 bg-black/40"></div>
+
+  <div class="relative mx-auto mt-24 w-[92vw] max-w-2xl">
+    <div class="bg-white rounded-2xl shadow-xl ring-1 ring-gray-200 overflow-hidden">
+      <div class="flex items-center justify-between px-4 py-3 border-b">
+        <div>
+          <div class="text-sm font-semibold text-gray-900">Benachrichtigungen</div>
+          <div class="text-xs text-gray-500">Gespeicherte Push-Abos (dieses Gerät / Browser)</div>
+        </div>
+        <button type="button" id="pushClose"
+                class="p-2 rounded-lg hover:bg-gray-100"
+                aria-label="Schließen">✕</button>
+      </div>
+
+      <div class="p-4 space-y-3">
+        <div id="pushList" class="space-y-2"></div>
+
+        <div class="flex items-center justify-end gap-2">
+          <span id="pushMsg" class="mr-auto text-xs text-gray-500"></span>
+          <button type="button" id="pushReloadBtn"
+                  class="px-3 py-2 rounded-xl border border-gray-300 hover:bg-gray-50 text-sm">
+            Aktualisieren
+          </button>
+          <button type="button" id="pushDoneBtn"
+                  class="px-3 py-2 rounded-xl bg-gray-900 text-white hover:bg-black text-sm">
             Schließen
           </button>
         </div>
@@ -1099,7 +1150,18 @@ async function subscribePush() {
     });
     console.log('sub ok', sub);
 
-    const filters = window.location.search.replace(/^\?/, '');
+    const form = document.querySelector('form[method="get"]');
+    const fd = new FormData(form);
+    const params = new URLSearchParams();
+    for (const [k, v] of fd.entries()) {
+      const vv = (v || '').toString().trim();
+      if (vv !== '') params.set(k, vv);
+    }
+    params.delete('page');
+    params.delete('per_page');
+    params.delete('_');
+    const filters = params.toString();
+
     const max_price = document.querySelector('input[name="price_max"]')?.value || null;
 
     const r = await fetch('/api/push/subscribe', {
@@ -1118,6 +1180,212 @@ async function subscribePush() {
     alert('Fehler beim Abonnieren: ' + (e && e.message ? e.message : e));
   }
 }
+// --- Push-Abos anzeigen / löschen ---
+const pushModal = document.getElementById('pushModal');
+const pushBackdrop = document.getElementById('pushBackdrop');
+const pushClose = document.getElementById('pushClose');
+const pushDoneBtn = document.getElementById('pushDoneBtn');
+const pushReloadBtn = document.getElementById('pushReloadBtn');
+const pushManageBtn = document.getElementById('pushManageBtn');
+const pushList = document.getElementById('pushList');
+const pushMsg = document.getElementById('pushMsg');
+
+function openPushModal() {
+  if (!pushModal) return;
+  if (pushMsg) pushMsg.textContent = '';
+  pushModal.classList.remove('hidden');
+  pushModal.setAttribute('aria-hidden', 'false');
+}
+
+function closePushModal() {
+  if (!pushModal) return;
+  pushModal.classList.add('hidden');
+  pushModal.setAttribute('aria-hidden', 'true');
+}
+
+function esc(s) {
+  return (s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function formatFiltersHumanReadable(filtersStr) {
+  const fs = (filtersStr || '').trim();
+  if (!fs) return 'Alle Angebote (keine Filter)';
+
+  let params;
+  try {
+    params = new URLSearchParams(fs.replace(/^\?/, ''));
+  } catch {
+    return fs; // Fallback: zeige roh
+  }
+
+  const label = {
+    q: 'Suche',
+    price_min: 'Preis min',
+    price_max: 'Preis max',
+    ez_min: 'EZ min (Jahr)',
+    ez_max: 'EZ max (Jahr)',
+    km_max: 'Kilometer max',
+    postal_prefix: 'PLZ beginnt mit',
+    city: 'Stadt enthält',
+    pics_min: 'Min. Bilder',
+    posted_days: 'Neu in den letzten (Tagen)',
+    sort: 'Sortierung',
+    per_page: 'Pro Seite',
+    page: 'Seite'
+  };
+
+  const sortLabel = {
+    posted_desc: 'Neueste zuerst',
+    price_asc: 'Preis ↑',
+    price_desc: 'Preis ↓',
+    km_asc: 'Kilometer ↑',
+    km_desc: 'Kilometer ↓',
+    seen_desc: 'Zuletzt gesehen',
+    title_asc: 'Titel A–Z'
+  };
+
+  const out = [];
+
+  // definierte Reihenfolge (sauberer als params.forEach)
+  const keys = [
+    'q','price_min','price_max','ez_min','ez_max','km_max','postal_prefix','city',
+    'pics_min','posted_days','sort'
+  ];
+
+  for (const k of keys) {
+    if (!params.has(k)) continue;
+    const v = (params.get(k) || '').trim();
+    if (!v) continue;
+
+    let vv = v;
+
+    // Werte hübscher machen
+    if ((k === 'price_min' || k === 'price_max') && /^\d+$/.test(vv)) {
+      vv = Number(vv).toLocaleString('de-DE') + ' €';
+    } else if (k === 'km_max' && /^\d+$/.test(vv)) {
+      vv = Number(vv).toLocaleString('de-DE') + ' km';
+    } else if (k === 'posted_days' && /^\d+$/.test(vv)) {
+      vv = vv + ' Tage';
+    } else if (k === 'pics_min' && /^\d+$/.test(vv)) {
+      vv = vv + ' Bilder';
+    } else if (k === 'postal_prefix') {
+      vv = vv.replace(/%+$/,''); // falls "85%" gespeichert ist
+    } else if (k === 'sort') {
+      vv = sortLabel[vv] || vv;
+    }
+
+    out.push(`${label[k] || k}: ${vv}`);
+  }
+
+  // Unbekannte Keys trotzdem anzeigen (falls du später neue Filter ergänzt)
+  for (const [k, v] of params.entries()) {
+    if (keys.includes(k)) continue;
+    const vv = (v || '').trim();
+    if (!vv) continue;
+    out.push(`${k}: ${vv}`);
+  }
+
+  return out.length ? out.join(' • ') : 'Alle Angebote (keine Filter)';
+}
+
+async function loadPushSubs() {
+  if (!pushList) return;
+  pushList.innerHTML = '<div class="text-sm text-gray-500">Lade…</div>';
+
+  try {
+    const r = await fetch('/api/push/list', { cache: 'no-store' });
+    const j = await r.json().catch(() => null);
+
+    if (!r.ok || !j || !j.ok) {
+      pushList.innerHTML = '<div class="text-sm text-rose-600">Konnte Abos nicht laden.</div>';
+      return;
+    }
+
+    const subs = j.subs || [];
+    if (!subs.length) {
+      pushList.innerHTML = '<div class="text-sm text-gray-500">Keine gespeicherten Abos.</div>';
+      return;
+    }
+
+    pushList.innerHTML = subs.map(s => {
+  const epShort = (s.endpoint || '').slice(0, 42) + '…';
+  const f = formatFiltersHumanReadable(s.filters);
+  const mp = (s.max_price !== null && s.max_price !== undefined && s.max_price !== '') ? s.max_price : '—';
+  const created = s.created_at || '—';
+
+  return `
+    <div class="rounded-xl border border-gray-200 p-3 flex items-start gap-3">
+      <div class="flex-1">
+        <div class="text-sm font-medium text-gray-900">Endpoint</div>
+        <div class="text-xs text-gray-600 break-all">${esc(epShort)}</div>
+        <div class="mt-2 grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-gray-600">
+          <div><span class="font-medium">Max Preis:</span> ${esc(String(mp))}</div>
+          <div><span class="font-medium">Erstellt:</span> ${esc(String(created))}</div>
+          <div class="md:col-span-3"><span class="font-medium">Filter:</span> ${esc(f)}</div>
+        </div>
+      </div>
+      <button class="px-3 py-2 rounded-xl bg-rose-600 text-white text-sm hover:bg-rose-700"
+              type="button"
+              data-push-del-b64="${btoa(unescape(encodeURIComponent(s.endpoint || '')))}">
+        Löschen
+      </button>
+    </div>
+  `;
+}).join('');
+
+// Delete-Bindings
+pushList.querySelectorAll('[data-push-del-b64]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const b64 = btn.getAttribute('data-push-del-b64') || '';
+    const endpoint = b64 ? decodeURIComponent(escape(atob(b64))) : '';
+    if (!endpoint) return;
+
+    btn.disabled = true;
+    const oldTxt = btn.textContent;
+    btn.textContent = '…';
+
+    try {
+      const rr = await fetch('/api/push/unsubscribe', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ endpoint })
+      });
+      const jj = await rr.json().catch(() => null);
+
+      if (rr.ok && jj && jj.ok) {
+        if (pushMsg) pushMsg.textContent = 'Abo gelöscht.';
+        await loadPushSubs();
+      } else {
+        btn.disabled = false;
+        btn.textContent = oldTxt || 'Löschen';
+        if (pushMsg) pushMsg.textContent = 'Löschen fehlgeschlagen.';
+      }
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = oldTxt || 'Löschen';
+      if (pushMsg) pushMsg.textContent = 'Netzwerkfehler beim Löschen.';
+    }
+  });
+});
+
+
+  } catch (e) {
+    pushList.innerHTML = '<div class="text-sm text-rose-600">Netzwerkfehler.</div>';
+  }
+}
+
+pushManageBtn?.addEventListener('click', () => {
+  openPushModal();
+  loadPushSubs();
+});
+pushReloadBtn?.addEventListener('click', loadPushSubs);
+pushBackdrop?.addEventListener('click', closePushModal);
+pushClose?.addEventListener('click', closePushModal);
+pushDoneBtn?.addEventListener('click', closePushModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && pushModal && !pushModal.classList.contains('hidden')) {
+    closePushModal();
+  }
+});
 
 // Button binden mit Statusanzeige
 document.getElementById('pushBtn')?.addEventListener('click', (e) => {
@@ -1245,11 +1513,6 @@ promptCopyBtn?.addEventListener('click', async () => {
 </script>
 
 
-<script>
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js", {scope: "/"});  // <-- statt /static/sw.js
-}
-</script>
 </body>
 </html>
 """
@@ -1336,6 +1599,29 @@ import threading
 from time import monotonic
 _sync_lock = threading.Lock()
 _last_sync_ts = 0.0
+from datetime import datetime, timedelta
+import re
+
+def _rval(r, k):
+    try:
+        return r[k]
+    except Exception:
+        return None
+
+def _extract_year_from_row(r):
+    s = (_rval(r, "first_reg") or _rval(r, "ez_text") or "")
+    m = re.search(r"(19\d{2}|20\d{2})", s)
+    return int(m.group(1)) if m else None
+
+def _parse_posted_at(r):
+    s = (_rval(r, "posted_at") or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("T", " "))
+    except Exception:
+        return None
+
 
 def _notify_matches(new_rows):
     # new_rows: sqlite3.Row[] aus listings
@@ -1343,52 +1629,123 @@ def _notify_matches(new_rows):
     subs = list(cur.execute("SELECT endpoint,p256dh,auth,filters,max_price FROM push_subscriptions"))
 
     for r in new_rows:
-        rid = int(r["id"])
+        rid = str(r["id"])
         price = r["price_eur"]
 
         for (endpoint,p256dh,auth,filters,max_price) in subs:
             # Schon gepusht? -> überspringen
             chk = cur.execute("SELECT 1 FROM push_sent WHERE endpoint=? AND listing_id=?", (endpoint, rid)).fetchone()
-            if chk: 
+            if chk:
                 continue
 
-            # Filter aus Abo anwenden (vereinfacht: price_max/km_max/plz/city/posted_days)
+            # Filter aus Abo anwenden
             params = {}
             if filters:
                 from urllib.parse import parse_qs
-                for k,v in parse_qs(filters, keep_blank_values=True).items():
-                    params[k] = v[0] if isinstance(v, list) and v else (v if isinstance(v,str) else "")
+                for k, v in parse_qs(filters, keep_blank_values=True).items():
+                    params[k] = v[0] if isinstance(v, list) and v else (v if isinstance(v, str) else "")
 
             ok = True
-            # Preislimits
+
+            # Preislimits (price_max aus Filter + max_price separater DB-Wert)
             if "price_max" in params and price is not None:
                 try:
-                    if int(price) > int(params["price_max"] or 0): ok = False
-                except: pass
+                    if int(price) > int(params["price_max"] or 0):
+                        ok = False
+                except:
+                    pass
+
             if max_price and price is not None:
                 try:
-                    if int(price) > int(max_price): ok = False
-                except: pass
+                    if int(price) > int(max_price):
+                        ok = False
+                except:
+                    pass
+
             # km_max
             if ok and "km_max" in params and r["km"] is not None:
                 try:
-                    if int(r["km"]) > int(params["km_max"] or 0): ok = False
-                except: pass
+                    if int(r["km"]) > int(params["km_max"] or 0):
+                        ok = False
+                except:
+                    pass
+
             # PLZ prefix
             if ok and params.get("postal_prefix"):
                 if not (r["postal_code"] or "").startswith(params["postal_prefix"]):
                     ok = False
+
             # City contains
             if ok and params.get("city"):
                 if params["city"].lower() not in (r["city"] or "").lower():
                     ok = False
-            # posted_days (nur „neu“ in X Tagen)
+
+            # posted_days (ALT: nur „posted_at existiert“)
             if ok and params.get("posted_days"):
                 try:
-                    pd = int(params["posted_days"]); 
+                    pd = int(params["posted_days"])
                     if pd >= 0 and not r["posted_at"]:
                         ok = False
-                except: pass
+                except:
+                    pass
+
+            # =======================
+            # NEU: zusätzliche Filter
+            # =======================
+
+            # --- q (Titel enthält) ---
+            if ok and params.get("q"):
+                if params["q"].lower() not in (r["title"] or "").lower():
+                    ok = False
+
+            # --- price_min ---
+            if ok and params.get("price_min") and r["price_eur"] is not None:
+                try:
+                    if int(r["price_eur"]) < int(params["price_min"] or 0):
+                        ok = False
+                except:
+                    pass
+
+            # --- Wenn price_max gesetzt ist, aber Listing keinen Preis hat -> NICHT pushen ---
+            if ok and (params.get("price_max") or max_price) and r["price_eur"] is None:
+                ok = False
+
+            # --- EZ min/max (Jahr) ---
+            if ok and (params.get("ez_min") or params.get("ez_max")):
+                y = _extract_year_from_row(r)
+                if y is None:
+                    ok = False
+                else:
+                    try:
+                        if params.get("ez_min") and y < int(params["ez_min"]):
+                            ok = False
+                        if params.get("ez_max") and y > int(params["ez_max"]):
+                            ok = False
+                    except:
+                        pass
+
+            # --- pics_min ---
+            if ok and params.get("pics_min"):
+                try:
+                    pics_min = int(params["pics_min"])
+                    pics = r["pics"] if r["pics"] is not None else 0
+                    if int(pics) < pics_min:
+                        ok = False
+                except:
+                    pass
+
+            # --- posted_days als echtes Datum-Fenster (überschreibt die alte "nur exists" Logik faktisch) ---
+            if ok and params.get("posted_days"):
+                try:
+                    pd = int(params["posted_days"])
+                    dt = _parse_posted_at(r)
+                    if dt is None:
+                        ok = False
+                    else:
+                        if dt < (datetime.now() - timedelta(days=pd)):
+                            ok = False
+                except:
+                    pass
 
             if not ok:
                 continue
@@ -1417,6 +1774,7 @@ def _notify_matches(new_rows):
     conn.close()
 
 
+
 @app.get("/api/sync")
 def api_sync():
     """
@@ -1442,10 +1800,9 @@ def api_sync():
 
         if changed:
           conn = get_db(); cur = conn.cursor()
-    # „Neu“: zuletzt gesehen == erstmalig gesehen (falls first_seen existiert), sonst die jüngsten per posted_at
           try:
               cur.execute("""
-                  SELECT id,title,price_eur,km,city,url,posted_at
+                  SELECT id,title,price_eur,km,city,url,posted_at,postal_code,ez_text,first_reg,pics
                   FROM listings
                   WHERE posted_at IS NOT NULL
                   ORDER BY posted_at DESC, last_seen DESC
@@ -1453,15 +1810,17 @@ def api_sync():
               """)
           except Exception:
               cur.execute("""
-                  SELECT id,title,price_eur,km,city,url,posted_at
+                  SELECT id,title,price_eur,km,city,url,posted_at,postal_code,ez_text,first_reg,pics
                   FROM listings
                   ORDER BY last_seen DESC
                   LIMIT 50
               """)
-        new_rows = cur.fetchall(); conn.close()
+        new_rows = cur.fetchall()
+        conn.close()
         _notify_matches(new_rows)
 
-        return {"ok": True, **res, "changed": changed}
+
+        return {"ok": True, **res, "changed": changed}  
     finally:
         _sync_lock.release()
 
@@ -1924,8 +2283,30 @@ def api_push_unsub():
     if not ep: return {"ok": False}, 400
     conn = get_db(); cur = conn.cursor()
     cur.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (ep,))
+    cur.execute("DELETE FROM push_sent WHERE endpoint=?", (ep,))  # cleanup dedupe
     conn.commit(); conn.close()
     return {"ok": True}
+
+@app.get("/api/push/list")
+def api_push_list():
+    conn = get_db(); cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT endpoint, filters, max_price, created_at
+        FROM push_subscriptions
+        ORDER BY created_at DESC
+    """).fetchall()
+    conn.close()
+
+    out = []
+    for r in rows:
+        out.append({
+            "endpoint": r["endpoint"],
+            "filters": r["filters"] or "",
+            "max_price": r["max_price"],
+            "created_at": r["created_at"],
+        })
+    return {"ok": True, "subs": out}
+
 
 if __name__ == "__main__":
     import os
