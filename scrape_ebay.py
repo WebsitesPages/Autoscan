@@ -504,19 +504,30 @@ SEARCH_URLS = [build_ka_search_url(1), build_ka_search_url(2)]
 # ------------------------------------------------------------
 # Sync
 # ------------------------------------------------------------
+# ============================================================
+# ERSETZE in scrape_ebay.py die komplette sync_once() Funktion
+# (die alte Funktion löschen und diese einfügen)
+# ============================================================
+
 def sync_once() -> dict:
     """
     Läuft alle SEARCH_URLS durch, schreibt SRP-Daten in DB und
     reichert anschließend per Detailseite Marke/Modell/… an.
     'stored' zählt NUR echte Inserts/Updates.
+    'seen_ids' enthält ALLE IDs die aktuell auf den SRPs sind.
     """
     seen = 0
     stored = 0
+    seen_ids = []
     for url in SEARCH_URLS:
         try:
             rows = crawl_search_page(url)
             seen += len(rows)
             for row in rows:
+                # ID merken für Verfügbarkeitsvergleich
+                if row.get("id"):
+                    seen_ids.append(str(row["id"]))
+
                 # 1) SRP-Daten schreiben
                 stored += upsert_listing(row)
 
@@ -536,17 +547,8 @@ def sync_once() -> dict:
                             stored += upsert_listing(payload)
                     except Exception as e:
                         print(f"[WARN] Detail bei {row.get('id')}: {e}")
-                    time.sleep(0.8)  # höflich zur Gegenstelle
-            time.sleep(2)  # kleine Pause zwischen Seiten
+                    time.sleep(0.8)
+            time.sleep(2)
         except Exception as e:
             print(f"[WARN] Fehler bei {url}: {e}")
-    return {"seen": seen, "stored": stored}
-
-
-# ------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------
-if __name__ == "__main__":
-    init_db()
-    res = sync_once()
-    print(f"Fertig. Gesehen: {res['seen']}, geschrieben: {res['stored']}")
+    return {"seen": seen, "stored": stored, "seen_ids": seen_ids}
