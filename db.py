@@ -2,16 +2,19 @@ import sqlite3
 
 DB_PATH = "autos.db"
 
+
 def get_conn():
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
+
 
 def ensure_column(conn, table, col, type_sql):
     cur = conn.execute(f"PRAGMA table_info({table})")
     cols = {r[1] for r in cur.fetchall()}
     if col not in cols:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {type_sql}")
+
 
 def init_db():
     conn = get_conn()
@@ -55,12 +58,19 @@ def init_db():
       )
     """)
     # sinnvolle Indizes
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_price   ON listings(price_eur)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_km      ON listings(km)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_postal  ON listings(postal_code)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_city    ON listings(city)")
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_listings_title   ON listings(title)")
-        # --- MIGRATION: neue Spalten für Detaildaten (Beschreibung + Bilder) ---
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listings_price   ON listings(price_eur)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listings_km      ON listings(km)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listings_postal  ON listings(postal_code)"
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listings_city    ON listings(city)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_listings_title   ON listings(title)")
+    # --- MIGRATION: neue Spalten für Detaildaten (Beschreibung + Bilder) ---
     # idempotent: wenn Spalte existiert -> try/except verhindert Crash
     try:
         cur.execute("ALTER TABLE listings ADD COLUMN description TEXT")
@@ -74,6 +84,7 @@ def init_db():
 
     conn.commit()
     conn.close()
+
 
 def upsert_listing(row: dict) -> int:
     """
@@ -117,11 +128,13 @@ def upsert_listing(row: dict) -> int:
 
     # Preis-Historie nur loggen, wenn sich Preis geändert hat
     if "price_eur" in row and row.get("price_eur") is not None:
-        cur.execute("SELECT price_eur FROM listings WHERE id = ?", (row["id"],))
+        cur.execute("SELECT price_eur FROM listings WHERE id = ?",
+                    (row["id"], ))
         current = cur.fetchone()
         if current and current[0] == row["price_eur"] and changed:
             # schon aktueller Preis in Zeile – Historie trotzdem nur 1x pro Änderung schreiben:
-            cur.execute("""
+            cur.execute(
+                """
               INSERT INTO listing_prices(listing_id, price_eur)
               VALUES (?, ?)
             """, (row["id"], row["price_eur"]))
