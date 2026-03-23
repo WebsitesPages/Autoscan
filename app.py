@@ -1106,7 +1106,7 @@ TPL = r"""
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-  const REFRESH_MS = 30000;
+  const REFRESH_MS = 120000;
   const VAPID_PUBLIC = "{{ VAPID_PUBLIC|default('')|safe }}".trim();
   console.log('[Push] VAPID Key Länge:', VAPID_PUBLIC.length, 'Anfang:', VAPID_PUBLIC.slice(0,8));
 
@@ -1926,7 +1926,7 @@ def _notify_matches(new_rows):
 def api_sync():
     global _last_sync_ts
     now = monotonic()
-    if (now - _last_sync_ts) < 8.0:
+    if (now - _last_sync_ts) < 90.0:
         return {"ok": True, "seen": 0, "stored": 0, "changed": False}
 
     if not _sync_lock.acquire(blocking=False):
