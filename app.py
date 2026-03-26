@@ -4,6 +4,7 @@ import os
 import sqlite3
 import json, time
 from pywebpush import webpush, WebPushException
+from py_vapid import Vapid
 from flask import Flask, request, redirect, url_for, render_template_string
 from providers.links import build_autoscout_search_url, build_similar_search_url
 from providers.ka_stats import fetch_ka_stats
@@ -13,6 +14,10 @@ from flask import send_from_directory, make_response
 
 VAPID_PUBLIC = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_PRIVATE_PEM = os.environ.get("VAPID_PRIVATE_KEY_PEM", "")
+_pem_file = os.environ.get("VAPID_PRIVATE_KEY_PEM_FILE", "")
+if _pem_file and os.path.exists(_pem_file):
+    with open(_pem_file) as _f:
+        VAPID_PRIVATE_PEM = _f.read().strip()
 PUSH_SUBJECT = os.environ.get("PUSH_SUBJECT", "mailto:noreply@example.com")
 
 APP_TITLE = "Autoscan"
@@ -1911,7 +1916,7 @@ def _notify_matches(new_rows):
                 webpush(
                     subscription_info={"endpoint": endpoint, "keys": {"p256dh": p256dh, "auth": auth}},
                     data=json.dumps(payload),
-                    vapid_private_key=VAPID_PRIVATE_PEM,
+                    vapid_private_key=Vapid.from_pem(VAPID_PRIVATE_PEM.encode() if isinstance(VAPID_PRIVATE_PEM, str) else VAPID_PRIVATE_PEM),
                     vapid_claims={"sub": PUSH_SUBJECT},
                 )
                 cur.execute("INSERT OR IGNORE INTO push_sent(endpoint, listing_id) VALUES(?,?)", (endpoint, rid))
