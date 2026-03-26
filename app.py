@@ -302,7 +302,7 @@ def index():
 @app.get("/api/table")
 def api_table():
     q = request.args.get("q", "")
-    price_min = request.args.get("price_min", "2000")
+    price_min = request.args.get("price_min", "")
     price_max = request.args.get("price_max", "9000")
     ez_min = request.args.get("ez_min", "2012")
     ez_max = request.args.get("ez_max", "")
