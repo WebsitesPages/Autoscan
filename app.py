@@ -1931,7 +1931,7 @@ def _notify_matches(new_rows):
 def api_sync():
     global _last_sync_ts
     now = monotonic()
-    if (now - _last_sync_ts) < 90.0:
+    if (now - _last_sync_ts) < 30.0:
         return {"ok": True, "seen": 0, "stored": 0, "changed": False}
 
     if not _sync_lock.acquire(blocking=False):
