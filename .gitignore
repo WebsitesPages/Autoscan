@@ -1,0 +1,12 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+autos.db
+autos.db-shm
+autos.db-wal
+.env
+vapid_private.pem
+*.log
+.DS_Store
+repl_state.bin

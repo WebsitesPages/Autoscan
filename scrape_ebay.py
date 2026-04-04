@@ -510,45 +510,30 @@ SEARCH_URLS = [build_ka_search_url(1), build_ka_search_url(2)]
 # ============================================================
 
 def sync_once() -> dict:
-    """
-    Läuft alle SEARCH_URLS durch, schreibt SRP-Daten in DB und
-    reichert anschließend per Detailseite Marke/Modell/… an.
-    'stored' zählt NUR echte Inserts/Updates.
-    'seen_ids' enthält ALLE IDs die aktuell auf den SRPs sind.
-    """
+    """Schneller Sync: SRP scannen, nur NEUE Listings detailliert laden."""
     seen = 0
     stored = 0
-    seen_ids = []
     for url in SEARCH_URLS:
         try:
             rows = crawl_search_page(url)
             seen += len(rows)
             for row in rows:
-                # ID merken für Verfügbarkeitsvergleich
-                if row.get("id"):
-                    seen_ids.append(str(row["id"]))
-
-                # 1) SRP-Daten schreiben
-                stored += upsert_listing(row)
-
-                # 2) Detaildaten ergänzen (immer platform/url/title mitgeben)
-                if row.get("url"):
+                changed = upsert_listing(row)
+                stored += changed
+                # Nur bei NEUEN Listings Detailseite laden
+                if changed > 0 and row.get("url"):
                     try:
                         det = parse_detail_page(row["url"])
                         if det:
-                            payload = {
-                                "id": row["id"],
-                                "platform": row.get("platform") or "ebay-kleinanzeigen",
-                                "url": row.get("url"),
-                            }
+                            payload = {"id": row["id"], "platform": row.get("platform") or "ebay-kleinanzeigen", "url": row.get("url")}
                             if row.get("title"):
                                 payload["title"] = row["title"]
                             payload.update(det)
-                            stored += upsert_listing(payload)
+                            upsert_listing(payload)
                     except Exception as e:
                         print(f"[WARN] Detail bei {row.get('id')}: {e}")
                     time.sleep(0.8)
-            time.sleep(2)
+            time.sleep(1)
         except Exception as e:
             print(f"[WARN] Fehler bei {url}: {e}")
-    return {"seen": seen, "stored": stored, "seen_ids": seen_ids}
+    return {"seen": seen, "stored": stored}
