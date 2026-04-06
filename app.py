@@ -954,7 +954,8 @@ TPL = r"""
   {% for r in rows %}
   <div class="listing-card"
        data-row-id="{{ r['id'] }}"
-       data-price-eur="{{ r['price_eur'] or '' }}">
+       data-price-eur="{{ r['price_eur'] or '' }}"
+       data-desc="{{ (r['description'] or '')|e }}">
 
     <div class="card-top">
       <button class="fav-btn" data-fav-id="{{ r['id'] }}" title="Favorit">🤍</button>
@@ -1529,6 +1530,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+
+  // --- Unfall-Warnwoerter ---
+  const WARN_WORDS = ['unfall','unfallwagen','unfallfahrzeug','unfallbeschaedigt','totalschaden','motorschaden','getriebeschaden','bastlerfahrzeug','bastlerauto','bastler','defekt','nicht fahrbereit','standschaden','hagelschaden','wasserschaden','rahmenschaden','verzogen','nachlassfahrzeug','export','schlachtung','teilespender','heckschaden'];
+
+  function checkWarnWords(card) {
+    const title = (card.querySelector('.card-title')?.textContent || '').toLowerCase();
+    const desc = (card.dataset.desc || '').toLowerCase();
+    const text = title + ' ' + desc;
+    const meta = card.querySelector('.card-meta');
+    if (!meta) return;
+    for (const w of WARN_WORDS) {
+      if (text.includes(w)) {
+        const tag = document.createElement('span');
+        tag.className = 'tag tag-warn';
+        tag.textContent = '\u26a0\ufe0f ' + w.charAt(0).toUpperCase() + w.slice(1);
+        meta.prepend(tag);
+        return;
+      }
+    }
+  }
+
+  function initWarnTags(scope) {
+    (scope || document).querySelectorAll('.listing-card').forEach(card => {
+      if (card.dataset.warnChecked === '1') return;
+      card.dataset.warnChecked = '1';
+      checkWarnWords(card);
+    });
+  }
+
   // --- Initial load ---
   autosync();
   initBadges();
@@ -1536,6 +1566,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDealScores();
   initPriceHistory();
   initMobileLinks();
+  initWarnTags();
   setInterval(autosync, REFRESH_MS);
 
   // --- Favorites ---
@@ -1706,6 +1737,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initDealScores();
     initPriceHistory();
     initMobileLinks();
+    initWarnTags();
   };
 });
 </script>
@@ -1720,7 +1752,8 @@ CARDS_TPL = r"""
 {% for r in rows %}
 <div class="listing-card"
      data-row-id="{{ r['id'] }}"
-     data-price-eur="{{ r['price_eur'] or '' }}">
+     data-price-eur="{{ r['price_eur'] or '' }}"
+     data-desc="{{ (r['description'] or '')|e }}">
 
   <div class="card-top">
     <button class="fav-btn" data-fav-id="{{ r['id'] }}" title="Favorit">🤍</button>
