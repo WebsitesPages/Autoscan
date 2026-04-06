@@ -1529,6 +1529,35 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+
+  // --- Unfall-Warnwörter ---
+  const WARN_WORDS = ['unfall','unfallwagen','unfallfahrzeug','unfallbeschädigt','totalschaden','motorschaden','getriebeschaden','bastlerfahrzeug','bastlerauto','bastler','defekt','nicht fahrbereit','standschaden','hagelschaden','wasserschaden','rahmenschaden','verzogen','nachlassfahrzeug','export','schlachtung','teilespender','heckschaden'];
+
+  function checkWarnWords(el) {
+    const card = el.closest('.listing-card');
+    if (!card) return;
+    const title = (card.querySelector('.card-title')?.textContent || '').toLowerCase();
+    const meta = card.querySelector('.card-meta');
+    if (!meta) return;
+    for (const w of WARN_WORDS) {
+      if (title.includes(w)) {
+        const tag = document.createElement('span');
+        tag.className = 'tag tag-warn';
+        tag.innerHTML = '<span class="icon">⚠️</span> ' + w.charAt(0).toUpperCase() + w.slice(1);
+        meta.prepend(tag);
+        return;
+      }
+    }
+  }
+
+  function initWarnTags(scope) {
+    (scope || document).querySelectorAll('.listing-card').forEach(card => {
+      if (card.dataset.warnChecked === '1') return;
+      card.dataset.warnChecked = '1';
+      checkWarnWords(card);
+    });
+  }
+
   // --- Initial load ---
   autosync();
   initBadges();
@@ -1536,6 +1565,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initDealScores();
   initPriceHistory();
   initMobileLinks();
+  initWarnTags();
   setInterval(autosync, REFRESH_MS);
 
   // --- Favorites ---
@@ -1706,6 +1736,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initDealScores();
     initPriceHistory();
     initMobileLinks();
+    initWarnTags();
   };
 });
 </script>
