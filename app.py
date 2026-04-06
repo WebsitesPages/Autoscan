@@ -1541,7 +1541,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const meta = card.querySelector('.card-meta');
     if (!meta) return;
     for (const w of WARN_WORDS) {
-      if (text.includes(w)) {
+      if (text.includes(w) && !text.includes(w + 'frei') && !text.includes(w + 'freies')) {
         const tag = document.createElement('span');
         tag.className = 'tag tag-warn';
         tag.textContent = '\u26a0\ufe0f ' + w.charAt(0).toUpperCase() + w.slice(1);
