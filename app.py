@@ -272,7 +272,7 @@ def index():
 
     cur.execute(
         f"""SELECT id, title, price_eur, km, postal_code, city, posted_at, pics, url, platform, last_seen, ez_text,
-                   brand, model, fuel, gearbox, first_reg
+                   brand, model, fuel, gearbox, first_reg, description
             FROM listings {where_sql} {order_sql} LIMIT ? OFFSET ?""",
         args + [per_page, offset],
     )
@@ -331,7 +331,7 @@ def api_table():
     cur = conn.cursor()
     cur.execute(
         f"""SELECT id, title, price_eur, km, postal_code, city, posted_at, pics, url, ez_text,
-                   brand, model, fuel, gearbox, first_reg
+                   brand, model, fuel, gearbox, first_reg, description
             FROM listings {where_sql} {order_sql} LIMIT ? OFFSET ?""",
         args + [50, 0],
     )
