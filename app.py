@@ -954,7 +954,8 @@ TPL = r"""
   {% for r in rows %}
   <div class="listing-card"
        data-row-id="{{ r['id'] }}"
-       data-price-eur="{{ r['price_eur'] or '' }}">
+       data-price-eur="{{ r['price_eur'] or '' }}"
+     data-desc="{{ (r['description'] or '')|e }}">
 
     <div class="card-top">
       <button class="fav-btn" data-fav-id="{{ r['id'] }}" title="Favorit">🤍</button>
@@ -1537,10 +1538,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const card = el.closest('.listing-card');
     if (!card) return;
     const title = (card.querySelector('.card-title')?.textContent || '').toLowerCase();
+    const desc = (card.dataset.desc || '').toLowerCase();
     const meta = card.querySelector('.card-meta');
     if (!meta) return;
     for (const w of WARN_WORDS) {
-      if (title.includes(w)) {
+      if (title.includes(w) || desc.includes(w)) {
         const tag = document.createElement('span');
         tag.className = 'tag tag-warn';
         tag.innerHTML = '<span class="icon">⚠️</span> ' + w.charAt(0).toUpperCase() + w.slice(1);
@@ -1751,7 +1753,8 @@ CARDS_TPL = r"""
 {% for r in rows %}
 <div class="listing-card"
      data-row-id="{{ r['id'] }}"
-     data-price-eur="{{ r['price_eur'] or '' }}">
+     data-price-eur="{{ r['price_eur'] or '' }}"
+     data-desc="{{ (r['description'] or '')|e }}">
 
   <div class="card-top">
     <button class="fav-btn" data-fav-id="{{ r['id'] }}" title="Favorit">🤍</button>
