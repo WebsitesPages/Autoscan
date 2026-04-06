@@ -955,6 +955,7 @@ TPL = r"""
   <div class="listing-card"
        data-row-id="{{ r['id'] }}"
        data-price-eur="{{ r['price_eur'] or '' }}"
+       data-desc="{{ (r['description'] or '')|e }}">
      data-desc="{{ (r['description'] or '')|e }}">
 
     <div class="card-top">
@@ -1539,6 +1540,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!card) return;
     const title = (card.querySelector('.card-title')?.textContent || '').toLowerCase();
     const desc = (card.dataset.desc || '').toLowerCase();
+    const desc = (card.dataset.desc || '').toLowerCase();
     const meta = card.querySelector('.card-meta');
     if (!meta) return;
     for (const w of WARN_WORDS) {
@@ -1754,6 +1756,7 @@ CARDS_TPL = r"""
 <div class="listing-card"
      data-row-id="{{ r['id'] }}"
      data-price-eur="{{ r['price_eur'] or '' }}"
+     data-desc="{{ (r['description'] or '')|e }}">
      data-desc="{{ (r['description'] or '')|e }}">
 
   <div class="card-top">
