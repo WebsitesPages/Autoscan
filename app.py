@@ -1823,6 +1823,7 @@ CARDS_TPL = r"""
          data-model="{{ (r['model'] or '')|e }}"
          data-km="{{ r['km'] or '' }}"
          data-ez="{{ (r['first_reg'] or r['ez_text'] or '')|e }}"
+         data-features="{{ (r['features_json'] or '[]')|e }}"
          target="_blank" rel="noopener">
         Mobile <span class="cmp-stats" data-mob-stats>…</span>
       </a>
