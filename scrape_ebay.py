@@ -466,6 +466,15 @@ def parse_detail_page(url: str) -> dict:
     if deduped:
         data["image_urls_json"] = json.dumps(deduped, ensure_ascii=False)
 
+    # --- Ausstattung / Features ---
+    features = []
+    for ft in soup.select("#viewad-configuration .checktag"):
+        txt = ft.get_text(" ", strip=True)
+        if txt:
+            features.append(txt)
+    if features:
+        data["features_json"] = json.dumps(features, ensure_ascii=False)
+
     return data
 
 # ------------------------------------------------------------

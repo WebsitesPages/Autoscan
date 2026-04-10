@@ -82,6 +82,11 @@ def init_db():
     except Exception:
         pass
 
+    try:
+        cur.execute("ALTER TABLE listings ADD COLUMN features_json TEXT")
+    except Exception:
+        pass
+
     conn.commit()
     conn.close()
 
